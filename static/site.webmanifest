@@ -1,11 +1,11 @@
 {
-  "name": "Yield Agent",
-  "short_name": "Yield Agent",
-  "description": "Dashboard dell'agente di rendimento passivo su Base",
+  "name": "Concentrated LP Agent",
+  "short_name": "LP Agent",
+  "description": "Dashboard dell'agente LP a liquidità concentrata su Base (Uniswap V3)",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#0b0f19",
-  "theme_color": "#10b981",
+  "theme_color": "#8b5cf6",
   "icons": [
     {
       "src": "/static/icon.svg",

@@ -129,3 +129,25 @@ def get_recent_operations(limit: int = 50) -> List[Dict[str, Any]]:
             SELECT * FROM lp_operations ORDER BY created_at DESC LIMIT ?
         """, (limit,))
         return [dict(r) for r in cur.fetchall()]
+
+
+def fetch_dashboard_data(limit: int = 50) -> Dict[str, Any]:
+    """Recupera tutti i dati storici (equity snapshots ed operazioni) per la dashboard."""
+    init_db()
+    with _connect() as conn:
+        latest = conn.execute("SELECT * FROM lp_snapshots ORDER BY id DESC LIMIT 1").fetchone()
+        equity = conn.execute("""
+            SELECT created_at, total_equity_usd, position_value_usd, current_price, is_in_range
+            FROM (SELECT * FROM lp_snapshots ORDER BY id DESC LIMIT 500)
+            ORDER BY id ASC
+        """).fetchall()
+        ops = conn.execute("""
+            SELECT * FROM lp_operations ORDER BY id DESC LIMIT ?
+        """, (limit,)).fetchall()
+
+    return {
+        "snapshot_at": latest["created_at"] if latest else None,
+        "equity": [dict(r) for r in equity],
+        "operations": [dict(r) for r in ops],
+    }
+

@@ -1,12 +1,8 @@
 """
 Dashboard web per l'agente LP a Liquidita' Concentrata su Base.
 
-Standard library HTTP server (senza dipendenze esterne come Flask/FastAPI):
-  - Barra visiva interattiva del Range di Prezzo (In-Range / Out-of-Range);
-  - Metriche chiave: Valore LP, Valore HODL, Impermanent Loss, Fee accumulate;
-  - Equity curve e composizione asset (WETH / USDC);
-  - Pulsanti manuali di Re-center, Fee Collection ed Esecuzione Ciclo;
-  - Storico operazioni ed eventi registrati su SQLite.
+Condivide il design system (Inter, JetBrains Mono, ITA helpers, Chart.js, badge e card)
+con gli altri agenti della suite (DCA, Yield, Neutral, Degen).
 """
 
 import hmac
@@ -31,310 +27,510 @@ from lp_manager import LpManager
 
 logger = logging.getLogger(__name__)
 
+STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 STATIC_ROUTES = {
-    "/apple-touch-icon.png": ("static/apple-touch-icon.png", "image/png"),
-    "/favicon.ico": ("static/favicon.ico", "image/x-icon"),
-    "/icon-192.png": ("static/icon-192.png", "image/png"),
-    "/icon-512.png": ("static/icon-512.png", "image/png"),
-    "/icon.svg": ("static/icon.svg", "image/svg+xml"),
-    "/icon-small.svg": ("static/icon-small.svg", "image/svg+xml"),
-    "/site.webmanifest": ("static/site.webmanifest", "application/manifest+json"),
-    "/dashboard.css": ("static/dashboard.css", "text/css"),
-    "/dashboard.js": ("static/dashboard.js", "application/javascript"),
+    "/favicon.ico": ("favicon.ico", "image/x-icon"),
+    "/static/icon.svg": ("icon.svg", "image/svg+xml"),
+    "/static/icon-small.svg": ("icon-small.svg", "image/svg+xml"),
+    "/static/icon-192.png": ("icon-192.png", "image/png"),
+    "/static/icon-512.png": ("icon-512.png", "image/png"),
+    "/static/apple-touch-icon.png": ("apple-touch-icon.png", "image/png"),
+    "/static/site.webmanifest": ("site.webmanifest", "application/manifest+json"),
+    "/static/dashboard.css": ("dashboard.css", "text/css; charset=utf-8"),
+    "/static/dashboard.js": ("dashboard.js", "application/javascript; charset=utf-8"),
+    "/icon.svg": ("icon.svg", "image/svg+xml"),
+    "/icon-small.svg": ("icon-small.svg", "image/svg+xml"),
+    "/icon-192.png": ("icon-192.png", "image/png"),
+    "/icon-512.png": ("icon-512.png", "image/png"),
+    "/apple-touch-icon.png": ("apple-touch-icon.png", "image/png"),
+    "/site.webmanifest": ("site.webmanifest", "application/manifest+json"),
+    "/dashboard.css": ("dashboard.css", "text/css; charset=utf-8"),
+    "/dashboard.js": ("dashboard.js", "application/javascript; charset=utf-8"),
 }
 
-HTML_TEMPLATE = """<!DOCTYPE html>
+HTML = r"""<!DOCTYPE html>
 <html lang="it">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Base Concentrated LP Agent</title>
-  <link rel="icon" href="/favicon.ico" sizes="any">
-  <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
-  <link rel="manifest" href="/site.webmanifest">
-  <link rel="stylesheet" href="/dashboard.css">
-  <style>
-    :root {
-      --bg: #090d16;
-      --card-bg: #111827;
-      --card-border: #1f293d;
-      --text: #f3f4f6;
-      --text-muted: #9ca3af;
-      --primary: #3b82f6;
-      --success: #10b981;
-      --warning: #f59e0b;
-      --danger: #ef4444;
-      --accent: #8b5cf6;
-    }
-    body {
-      background: var(--bg);
-      color: var(--text);
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      margin: 0;
-      padding: 20px;
-    }
-    .container { max-width: 1200px; margin: 0 auto; }
-    .header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding-bottom: 20px;
-      border-bottom: 1px solid var(--card-border);
-      margin-bottom: 24px;
-    }
-    .badge {
-      padding: 6px 12px;
-      border-radius: 9999px;
-      font-size: 0.85rem;
-      font-weight: 600;
-      text-transform: uppercase;
-    }
-    .badge-in { background: rgba(16,185,129,0.2); color: var(--success); border: 1px solid var(--success); }
-    .badge-out { background: rgba(239,68,68,0.2); color: var(--danger); border: 1px solid var(--danger); }
-    .badge-paper { background: rgba(139,92,246,0.2); color: var(--accent); border: 1px solid var(--accent); }
-    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; margin-bottom: 24px; }
-    .card {
-      background: var(--card-bg);
-      border: 1px solid var(--card-border);
-      border-radius: 12px;
-      padding: 20px;
-    }
-    .card-title { font-size: 0.85rem; color: var(--text-muted); margin-bottom: 8px; text-transform: uppercase; }
-    .card-value { font-size: 1.8rem; font-weight: 700; }
-    
-    /* Range Visualizer */
-    .range-box {
-      background: var(--card-bg);
-      border: 1px solid var(--card-border);
-      border-radius: 12px;
-      padding: 24px;
-      margin-bottom: 24px;
-    }
-    .range-bar-container {
-      position: relative;
-      height: 36px;
-      background: #1f2937;
-      border-radius: 8px;
-      margin: 24px 0 12px 0;
-      overflow: hidden;
-      border: 1px solid var(--card-border);
-    }
-    .range-active-zone {
-      position: absolute;
-      left: 15%;
-      right: 15%;
-      height: 100%;
-      background: rgba(16, 185, 129, 0.25);
-      border-left: 2px dashed var(--success);
-      border-right: 2px dashed var(--success);
-    }
-    .range-price-pin {
-      position: absolute;
-      top: -4px;
-      width: 4px;
-      height: 44px;
-      background: #ffffff;
-      box-shadow: 0 0 10px rgba(255,255,255,0.8);
-      transform: translateX(-50%);
-      transition: left 0.5s ease;
-    }
-    .range-labels {
-      display: flex;
-      justify-content: space-between;
-      color: var(--text-muted);
-      font-size: 0.9rem;
-    }
-    
-    table { width: 100%; border-collapse: collapse; margin-top: 12px; }
-    th, td { padding: 12px; text-align: left; border-bottom: 1px solid var(--card-border); font-size: 0.9rem; }
-    th { color: var(--text-muted); }
-    .btn {
-      background: var(--primary);
-      color: white;
-      border: none;
-      padding: 10px 20px;
-      border-radius: 8px;
-      font-weight: 600;
-      cursor: pointer;
-      transition: opacity 0.2s;
-    }
-    .btn:hover { opacity: 0.9; }
-    .btn-secondary { background: #374151; }
-  </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Concentrated LP Agent</title>
+<link rel="icon" href="/favicon.ico" sizes="48x48">
+<link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+<link rel="manifest" href="/static/site.webmanifest">
+<meta name="theme-color" content="#8b5cf6">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/dashboard.css?v=4">
+<style>
+:root {
+  --primary: #8b5cf6;
+  --accent: #a855f7;
+}
+.range-visualizer {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px;
+  margin-top: 6px;
+}
+.range-track {
+  position: relative;
+  height: 28px;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 8px;
+  margin: 18px 0 12px;
+  overflow: visible;
+}
+.range-zone {
+  position: absolute;
+  top: 0; bottom: 0;
+  background: rgba(139, 92, 246, 0.22);
+  border-left: 2px solid var(--primary);
+  border-right: 2px solid var(--primary);
+  border-radius: 6px;
+}
+.price-cursor {
+  position: absolute;
+  top: -8px;
+  bottom: -8px;
+  width: 4px;
+  background: #10b981;
+  border-radius: 2px;
+  box-shadow: 0 0 12px #10b981;
+  transform: translateX(-50%);
+  transition: left 0.3s ease;
+  z-index: 2;
+}
+.price-cursor.out-of-range {
+  background: #ef4444;
+  box-shadow: 0 0 12px #ef4444;
+}
+.cursor-tooltip {
+  position: absolute;
+  top: -26px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 11px;
+  font-weight: 700;
+  font-family: 'JetBrains Mono', monospace;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: #10b981;
+  color: #0b0f19;
+  white-space: nowrap;
+}
+.cursor-tooltip.out-of-range {
+  background: #ef4444;
+  color: #fff;
+}
+.range-bounds {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--muted);
+}
+.range-bounds b {
+  color: var(--text);
+  font-family: 'JetBrains Mono', monospace;
+}
+</style>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="/static/dashboard.js?v=4"></script>
 </head>
 <body>
-<div class="container">
-  <div class="header">
+<header class="header">
+  <div class="brand">
+    <img src="/static/icon.svg" alt="">
     <div>
-      <h1 style="margin:0 0 4px 0;">⚡ Uniswap V3 Concentrated LP Agent</h1>
-      <span style="color:var(--text-muted); font-size:0.9rem;">Base L2 (8453) &bull; Pair: <strong id="poolPair">WETH/USDC</strong></span>
-    </div>
-    <div style="display:flex; gap:10px; align-items:center;">
-      <span id="badgeMode" class="badge badge-paper">PAPER</span>
-      <span id="badgeStatus" class="badge badge-in">IN RANGE</span>
-      <button id="btnRun" class="btn">Esegui Ciclo Ora</button>
+      <h1>Concentrated LP Agent <span class="badge b-no" id="mode">…</span></h1>
+      <p class="tagline">Liquidità concentrata su Base • Uniswap V3 (WETH/USDC) • OpenRouter AI • SQLite</p>
     </div>
   </div>
-
-  <!-- Key Metrics -->
-  <div class="grid">
-    <div class="card">
-      <div class="card-title">Prezzo Corrente WETH</div>
-      <div id="currPrice" class="card-value">$0.00</div>
-      <div id="tickVal" style="color:var(--text-muted); font-size:0.85rem; margin-top:4px;">Tick: -</div>
-    </div>
-    <div class="card">
-      <div class="card-title">Valore Posizione LP</div>
-      <div id="lpVal" class="card-value">$0.00</div>
-      <div id="lpBreakdown" style="color:var(--text-muted); font-size:0.85rem; margin-top:4px;">- WETH / - USDC</div>
-    </div>
-    <div class="card">
-      <div class="card-title">Commissioni Riscosse</div>
-      <div id="feesVal" class="card-value" style="color:var(--success);">$0.00</div>
-      <div id="recentersCount" style="color:var(--text-muted); font-size:0.85rem; margin-top:4px;">0 Re-centers</div>
-    </div>
-    <div class="card">
-      <div class="card-title">Impermanent Loss / PnL</div>
-      <div id="ilVal" class="card-value">0.00%</div>
-      <div id="pnlNet" style="color:var(--text-muted); font-size:0.85rem; margin-top:4px;">Net PnL: $0.00</div>
-    </div>
+  <div class="header-actions">
+    <span class="updated" id="updated"></span>
+    <button class="btn" id="run">⚡ Esegui ciclo ora</button>
   </div>
+</header>
 
-  <!-- Active Range Gauge -->
-  <div class="range-box">
-    <div style="display:flex; justify-content:space-between; align-items:center;">
-      <h3 style="margin:0;">🎯 Posizionamento nel Range di Liquidità</h3>
-      <span id="rangeWidth" style="color:var(--accent); font-weight:600;">Range: +/- 4.0%</span>
-    </div>
+<section class="card paper-panel" id="paper-panel" hidden>
+  <div class="card-head"><h2>📝 Paper trading <small>portafoglio virtuale, liquidità reale</small></h2></div>
+  <div class="paper-grid" id="paper-grid"></div>
+  <p class="note" id="paper-note"></p>
+</section>
 
-    <div class="range-bar-container">
-      <div class="range-active-zone"></div>
-      <div id="pricePin" class="range-price-pin" style="left: 50%;"></div>
-    </div>
+<section class="card wallet-bar" id="wallet-panel" hidden>
+  <div class="wallet-items" id="wallet-items"></div>
+  <p class="note" id="wallet-note" hidden></p>
+</section>
 
-    <div class="range-labels">
-      <div>Bordo Inferiore: <strong id="priceLower">$0.00</strong></div>
-      <div>Prezzo: <strong id="centerPrice">$0.00</strong> (<span id="rangeProgress">50%</span>)</div>
-      <div>Bordo Superiore: <strong id="priceUpper">$0.00</strong></div>
-    </div>
-  </div>
-
-  <!-- Operations Log -->
+<section class="stats">
   <div class="card">
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
-      <h3 style="margin:0;">📜 Storico Operazioni LP</h3>
-      <span style="color:var(--text-muted); font-size:0.85rem;">Aggiornamento live ogni 15s</span>
-    </div>
-    <table>
-      <thead>
-        <tr>
-          <th>Orario</th>
-          <th>Operazione</th>
-          <th>Importo USD</th>
-          <th>Status</th>
-          <th>Dettagli / Motivo</th>
-        </tr>
-      </thead>
-      <tbody id="opsBody">
-        <tr><td colspan="5" style="text-align:center; color:var(--text-muted);">Caricamento dati...</td></tr>
-      </tbody>
-    </table>
+    <h3>Valore Posizione LP</h3>
+    <div class="value" id="total">--</div>
+    <div class="sub" id="total-sub">-- WETH / -- USDC</div>
   </div>
+  <div class="card">
+    <h3>Prezzo WETH &amp; Range</h3>
+    <div class="value" id="curr-price">--</div>
+    <div class="sub" id="range-badge-wrap"><span class="badge b-no" id="range-status">--</span></div>
+  </div>
+  <div class="card">
+    <h3>Commissioni Totali</h3>
+    <div class="value" style="color:var(--success)" id="fees-val">--</div>
+    <div class="sub" id="fees-sub">0 Re-centers</div>
+  </div>
+  <div class="card">
+    <h3>Impermanent Loss &amp; PnL</h3>
+    <div class="value" id="il-val">0.00%</div>
+    <div class="sub" id="pnl-sub">Net PnL: $0.00</div>
+  </div>
+</section>
+
+<section class="card section">
+  <div class="card-head">
+    <div class="tabs" data-tabs="chart">
+      <button class="tab active" data-tab="equity">💼 Andamento capitale</button>
+      <button class="tab" data-tab="price">📈 Prezzo WETH vs Equity</button>
+    </div>
+  </div>
+  <div class="chart-box tall"><canvas id="equity"></canvas></div>
+</section>
+
+<section class="card section">
+  <div class="card-head">
+    <h2>🎯 Range di Liquidità Attivo <small>Uniswap V3</small></h2>
+    <span class="badge b-info" id="pool-info">WETH/USDC 0.05%</span>
+  </div>
+  <div class="range-visualizer">
+    <div class="range-bounds">
+      <div>Bordo Inferiore: <b id="price-lower">$0.00</b> <small id="tick-lower-sub"></small></div>
+      <div>Ampiezza Range: <b id="range-width">&plusmn;4.0%</b></div>
+      <div>Bordo Superiore: <b id="price-upper">$0.00</b> <small id="tick-upper-sub"></small></div>
+    </div>
+    <div class="range-track">
+      <div class="range-zone" id="range-zone" style="left:15%; width:70%;"></div>
+      <div class="price-cursor" id="price-cursor" style="left:50%;">
+        <div class="cursor-tooltip" id="cursor-tooltip">$0.00</div>
+      </div>
+    </div>
+    <div style="display:flex; justify-content:space-between; align-items:center; font-size:12px; color:var(--muted); margin-top:10px; flex-wrap:wrap; gap:8px;">
+      <span>Progresso nel range: <b id="range-progress" style="color:var(--text)">50%</b></span>
+      <span id="range-distance">Distanza bordi: --% / --%</span>
+      <span>Tick corrente: <b id="curr-tick" style="color:var(--text)">--</b></span>
+    </div>
+  </div>
+</section>
+
+<div class="grid-2">
+  <section class="card">
+    <div class="card-head"><h2>📊 Composizione Posizione LP</h2><small id="pos-note">WETH / USDC su Base</small></div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Asset</th><th>Quantità</th><th>Prezzo</th><th>Valore USD</th><th>Quota LP</th></tr></thead>
+      <tbody id="assets"></tbody>
+    </table></div>
+  </section>
+  <section class="card">
+    <div class="card-head"><h2>🧠 Ultima decisione AI</h2></div>
+    <div class="decision-box">
+      <div class="title" id="ai-action">In attesa del primo ciclo...</div>
+      <div class="desc" id="ai-reason">L'agente valuterà la posizione LP al prossimo intervallo o con "Esegui ciclo ora".</div>
+    </div>
+    <div class="kv">
+      <div><b>Modello:</b> OpenRouter (Llama 3.3 70B)</div>
+      <div><b>Strategia:</b> Liquidità concentrata dinamica + re-centering anti-whipsaw</div>
+    </div>
+  </section>
 </div>
 
+<section class="card section">
+  <div class="card-head"><h2>📜 Storico operazioni LP</h2></div>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Data (UTC)</th><th>Operazione</th><th>Dettaglio</th><th>Importo</th><th>Esito</th><th>Motivazione</th></tr></thead>
+    <tbody id="ops"></tbody>
+  </table></div>
+</section>
+
+<footer class="footer">Concentrated LP Agent • Liquidità Concentrata su Base (Uniswap V3) &amp; OpenRouter AI • CapRover &amp; Docker</footer>
+
 <script>
-async function refresh() {
-  try {
-    const res = await fetch('/api/status');
-    const d = await res.json();
+const { $, esc, isNum, usd, signedUsd, pct, signedPct, price, cls, time, empty, sideBadge, statusBadge } = ITA;
+let chart = null, data = null, chartTab = 'equity';
 
-    document.getElementById('poolPair').innerText = d.pool.pair + ' (' + (d.pool.fee_tier/10000).toFixed(2) + '%)';
-    document.getElementById('badgeMode').innerText = (d.mode || 'paper').toUpperCase();
-    document.getElementById('currPrice').innerText = '$' + d.current_price.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
-    document.getElementById('tickVal').innerText = 'Tick: ' + d.current_tick;
+function renderStatus(s) {
+  if (!s) return;
+  const pos = s.position || {};
+  const balances = s.balances || {};
+  const currPrice = s.current_price || 0;
 
-    const pos = d.position || {};
-    const inRange = pos.is_strictly_in_range;
-    const bStatus = document.getElementById('badgeStatus');
-    if (inRange) {
-      bStatus.className = 'badge badge-in';
-      bStatus.innerText = 'IN RANGE';
-    } else {
-      bStatus.className = 'badge badge-out';
-      bStatus.innerText = 'OUT OF RANGE';
-    }
+  const lpVal = pos.current_lp_value_usd || 0;
+  const totVal = s.total_equity_usd || (s.paper ? s.paper.total_equity_usd : lpVal + (balances.total_usd || 0));
+  $('total').textContent = usd(totVal);
 
-    document.getElementById('lpVal').innerText = '$' + (pos.current_lp_value_usd || 0).toFixed(2);
-    document.getElementById('lpBreakdown').innerText = (pos.amount0 || 0).toFixed(4) + ' WETH / $' + (pos.amount1 || 0).toFixed(2) + ' USDC';
-    document.getElementById('feesVal').innerText = '$' + (d.total_fees_collected_usd || 0).toFixed(2);
-    document.getElementById('recentersCount').innerText = (d.total_recenters || 0) + ' Re-centers eseguiti';
+  const amt0 = pos.amount0 || 0;
+  const amt1 = pos.amount1 || 0;
+  $('total-sub').textContent = `${amt0.toFixed(4)} WETH / ${usd(amt1)}`;
 
-    const ilPct = pos.impermanent_loss_pct || 0;
-    const ilEl = document.getElementById('ilVal');
-    ilEl.innerText = (ilPct >= 0 ? '+' : '') + ilPct.toFixed(2) + '%';
-    ilEl.style.color = ilPct < -2.0 ? 'var(--danger)' : 'var(--text)';
+  $('curr-price').textContent = usd(currPrice);
+  const inRange = pos.is_strictly_in_range;
+  const hasPos = pos.has_position;
+  if (!hasPos) {
+    $('range-status').textContent = 'NESSUNA POSIZIONE';
+    $('range-status').className = 'badge b-no';
+  } else if (inRange) {
+    $('range-status').textContent = '✅ IN-RANGE';
+    $('range-status').className = 'badge b-ok';
+  } else {
+    $('range-status').textContent = '⚠️ OUT-OF-RANGE';
+    $('range-status').className = 'badge b-bad';
+  }
 
-    document.getElementById('pnlNet').innerText = 'Net PnL: $' + (pos.net_pnl_usd || 0).toFixed(2) + ' (' + (pos.net_pnl_pct || 0).toFixed(2) + '%)';
+  const uncoll = pos.fees_collected_usd || 0;
+  const totFees = s.total_fees_collected_usd || 0;
+  $('fees-val').textContent = usd(totFees + uncoll);
+  const recenters = s.total_recenters || 0;
+  $('fees-sub').textContent = `${recenters} Re-centers • non riscosse: ${usd(uncoll)}`;
 
-    // Range bar
-    const pL = pos.price_lower || (d.current_price * 0.96);
-    const pU = pos.price_upper || (d.current_price * 1.04);
-    document.getElementById('priceLower').innerText = '$' + pL.toFixed(2);
-    document.getElementById('priceUpper').innerText = '$' + pU.toFixed(2);
-    document.getElementById('centerPrice').innerText = '$' + d.current_price.toFixed(2);
-    document.getElementById('rangeWidth').innerText = 'Range: +/- ' + ((d.range_width_pct || 8.0)/2).toFixed(1) + '%';
+  const il = pos.impermanent_loss_pct || 0;
+  const netPnl = pos.net_pnl_usd || 0;
+  const netPnlPct = pos.net_pnl_pct || 0;
+  $('il-val').innerHTML = `<span class="${cls(il)}">${il >= 0 ? '+' : ''}${il.toFixed(2)}%</span>`;
+  $('pnl-sub').innerHTML = `Net PnL: <span class="${cls(netPnl)}">${signedUsd(netPnl)} (${signedPct(netPnlPct)})</span>`;
 
-    const prog = pos.range_progress_pct !== undefined ? pos.range_progress_pct : 50;
-    document.getElementById('rangeProgress').innerText = prog.toFixed(1) + '%';
-    // Mappa la posizione percentuale (15% to 85% zone)
-    const pinPos = 15 + (prog * 0.70);
-    document.getElementById('pricePin').style.left = Math.max(0, Math.min(100, pinPos)) + '%';
+  renderRange(s);
+  renderAssets(s);
+}
 
-    // Ops history
-    const opsRes = await fetch('/api/operations');
-    const ops = await opsRes.json();
-    const tbody = document.getElementById('opsBody');
-    if (ops.length > 0) {
-      tbody.innerHTML = ops.map(o => `
-        <tr>
-          <td>${new Date(o.created_at * 1000).toLocaleTimeString()}</td>
-          <td><strong style="text-transform:uppercase;">${o.operation}</strong></td>
-          <td>$${(o.amount_usd || 0).toFixed(2)}</td>
-          <td><span style="color:${o.status === 'success' ? 'var(--success)' : 'var(--text-muted)'}">${o.status}</span></td>
-          <td>${o.reason || '-'}</td>
-        </tr>
-      `).join('');
-    } else {
-      tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; color:var(--text-muted);">Nessuna operazione registrata</td></tr>';
-    }
-  } catch(e) {
-    console.error('Refresh error:', e);
+function renderRange(s) {
+  const pos = s.position || {};
+  const currPrice = s.current_price || 0;
+  const pLower = pos.price_lower || 0;
+  const pUpper = pos.price_upper || 0;
+
+  $('pool-info').textContent = `${s.pool?.pair || 'WETH/USDC'} (${((s.pool?.fee_tier || 500) / 10000).toFixed(2)}%)`;
+  $('price-lower').textContent = pLower ? usd(pLower) : '--';
+  $('price-upper').textContent = pUpper ? usd(pUpper) : '--';
+  $('tick-lower-sub').textContent = pos.tick_lower != null ? `(Tick ${pos.tick_lower})` : '';
+  $('tick-upper-sub').textContent = pos.tick_upper != null ? `(Tick ${pos.tick_upper})` : '';
+  $('range-width').textContent = `±${((s.range_width_pct || 8.0) / 2).toFixed(1)}%`;
+  $('curr-tick').textContent = s.current_tick != null ? s.current_tick : '--';
+
+  const cursor = $('price-cursor');
+  const tooltip = $('cursor-tooltip');
+  const zone = $('range-zone');
+
+  if (!pLower || !pUpper || !currPrice) {
+    cursor.style.left = '50%';
+    tooltip.textContent = usd(currPrice);
+    return;
+  }
+
+  const rangeSpan = pUpper - pLower;
+  const pad = rangeSpan * 0.4;
+  const displayMin = Math.max(0, pLower - pad);
+  const displayMax = pUpper + pad;
+  const totalSpan = displayMax - displayMin;
+
+  const zoneLeft = Math.max(0, Math.min(100, ((pLower - displayMin) / totalSpan) * 100));
+  const zoneWidth = Math.max(0, Math.min(100 - zoneLeft, ((pUpper - pLower) / totalSpan) * 100));
+  zone.style.left = zoneLeft.toFixed(1) + '%';
+  zone.style.width = zoneWidth.toFixed(1) + '%';
+
+  const cursorPct = Math.max(2, Math.min(98, ((currPrice - displayMin) / totalSpan) * 100));
+  cursor.style.left = cursorPct.toFixed(1) + '%';
+  tooltip.textContent = usd(currPrice);
+
+  const inRange = pos.is_strictly_in_range;
+  cursor.classList.toggle('out-of-range', !inRange);
+  tooltip.classList.toggle('out-of-range', !inRange);
+
+  $('range-progress').textContent = `${(pos.range_progress_pct || 50).toFixed(1)}%`;
+
+  const distLower = pLower > 0 ? ((currPrice - pLower) / pLower * 100).toFixed(1) : '--';
+  const distUpper = pUpper > 0 ? ((pUpper - currPrice) / currPrice * 100).toFixed(1) : '--';
+  $('range-distance').textContent = `Distanza bordi: inf +${distLower}% • sup -${distUpper}%`;
+}
+
+function renderAssets(s) {
+  const pos = s.position || {};
+  const currPrice = s.current_price || 0;
+  const balances = s.balances || {};
+
+  const rows = [];
+  const lpVal = pos.current_lp_value_usd || 0;
+
+  if (pos.amount0 != null || pos.amount1 != null) {
+    const wethVal = (pos.amount0 || 0) * currPrice;
+    const usdcVal = pos.amount1 || 0;
+    const wethPct = lpVal > 0 ? (wethVal / lpVal * 100) : 0;
+    const usdcPct = lpVal > 0 ? (usdcVal / lpVal * 100) : 0;
+
+    rows.push({
+      symbol: 'WETH (in LP)',
+      amount: (pos.amount0 || 0).toFixed(4),
+      price: usd(currPrice),
+      value: usd(wethVal),
+      weight: `${wethPct.toFixed(1)}%`,
+    });
+    rows.push({
+      symbol: 'USDC (in LP)',
+      amount: (pos.amount1 || 0).toFixed(2),
+      price: usd(1.0),
+      value: usd(usdcVal),
+      weight: `${usdcPct.toFixed(1)}%`,
+    });
+  }
+
+  if (balances.ETH != null) {
+    rows.push({
+      symbol: 'ETH (Gas Wallet)',
+      amount: Number(balances.ETH).toFixed(5),
+      price: usd(currPrice),
+      value: usd(Number(balances.ETH) * currPrice),
+      weight: 'Riserva gas',
+    });
+  }
+  if (balances.USDC != null && balances.USDC > 0) {
+    rows.push({
+      symbol: 'USDC (Idle Wallet)',
+      amount: Number(balances.USDC).toFixed(2),
+      price: usd(1.0),
+      value: usd(balances.USDC),
+      weight: 'Disponibile',
+    });
+  }
+
+  $('assets').innerHTML = rows.map(r => `<tr>
+    <td><b>${esc(r.symbol)}</b></td>
+    <td class="num">${r.amount}</td>
+    <td class="num">${r.price}</td>
+    <td class="num"><b>${r.value}</b></td>
+    <td class="num">${r.weight}</td>
+  </tr>`).join('') || empty(5, 'Nessun asset attivo.');
+}
+
+function renderChart(points) {
+  if (!points || !points.length) return;
+  const labels = points.map(p => time(p.created_at));
+
+  if (chartTab === 'equity') {
+    chart = ITA.lineChart(chart, $('equity'), labels, [
+      { label: 'Capitale Totale ($)', data: points.map(p => p.total_equity_usd) },
+      { label: 'Valore Posizione LP ($)', data: points.map(p => p.position_value_usd) },
+    ]);
+  } else {
+    chart = ITA.lineChart(chart, $('equity'), labels, [
+      { label: 'Prezzo WETH ($)', data: points.map(p => p.current_price) },
+    ]);
   }
 }
 
-document.getElementById('btnRun').addEventListener('click', async () => {
-  const token = prompt('Inserisci DASHBOARD_ADMIN_TOKEN (lascia vuoto se disabilitato):', '');
-  try {
-    const res = await fetch('/api/run', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json', 'X-Admin-Token': token || ''}
-    });
-    if (res.ok) {
-      alert('Ciclo LP avviato con successo!');
-      refresh();
-    } else {
-      alert('Avvio rifiutato.');
-    }
-  } catch(e) { alert('Errore: ' + e); }
-});
+function renderOps(ops) {
+  const last = ops[0];
+  if (last) {
+    $('last-op') && ($('last-op').textContent = (last.operation || '--').toUpperCase());
+    $('ai-action').textContent = (last.operation || 'HOLD').toUpperCase();
+    $('ai-reason').textContent = last.reason || 'Nessuna motivazione salvata.';
+  }
+  $('ops').innerHTML = ops.map(o => {
+    let detail = '--';
+    try {
+      const d = typeof o.details_json === 'string' ? JSON.parse(o.details_json) : (o.details_json || {});
+      if (o.operation === 'mint') {
+        detail = `Range ${d.range_width_pct ? '±' + (d.range_width_pct/2).toFixed(1) + '%' : ''}`;
+      } else if (o.operation === 'recenter') {
+        detail = d.old_range ? `Da ${d.old_range}` : 'Riposizionamento range';
+      } else if (o.operation === 'collect_fees') {
+        detail = 'Riscossione commissioni pool';
+      } else {
+        detail = d.reason ? esc(d.reason) : '--';
+      }
+    } catch(e) {}
 
-refresh();
-setInterval(refresh, 15000);
+    return `<tr>
+      <td class="num">${esc(time(o.created_at))}</td>
+      <td>${sideBadge(o.operation)}</td>
+      <td>${esc(detail)}</td>
+      <td class="num">${o.amount_usd ? usd(o.amount_usd) : '--'}</td>
+      <td>${statusBadge(o.status)}</td>
+      <td class="reason">${esc(o.reason || '')}</td>
+    </tr>`;
+  }).join('') || empty(6, 'Nessuna operazione registrata.');
+}
+
+async function load() {
+  try {
+    const res = await fetch('/api/data');
+    data = await res.json();
+  } catch (e) {
+    $('updated').textContent = 'dashboard non raggiungibile';
+    return;
+  }
+  ITA.renderMeta(data.meta);
+  renderStatus(data.status);
+  renderChart(data.equity || []);
+  renderOps(data.operations || []);
+}
+
+ITA.setupTabs('chart', (t) => {
+  chartTab = t;
+  renderChart(data?.equity || []);
+});
+ITA.setupRun(load);
+load();
+setInterval(load, 15000);
 </script>
 </body>
 </html>
 """
+
+
+def build_meta(data: Dict[str, Any]) -> Dict[str, Any]:
+    status = data.get("status") or {}
+    mode = status.get("mode")
+    if not mode:
+        mode = "paper" if config.PAPER_TRADING else ("dry_run" if config.DRY_RUN else "live")
+
+    paper = None
+    if mode == "paper":
+        p = status.get("paper") or {}
+        paper = {
+            "initial_usd": p.get("initial_equity_usd", config.PAPER_START_USDC),
+            "value_usd": p.get("total_equity_usd", status.get("total_equity_usd")),
+            "pnl_usd": p.get("pnl_usd"),
+            "operations": p.get("operations", 0),
+            "costs_usd": p.get("gas_spent_usd", 0.0),
+            "costs_label": "Gas simulato",
+            "started_at": p.get("created_at"),
+            "extra": [
+                ["Fee riscosse (lifetime)", f"${float(status.get('total_fees_collected_usd') or 0.0):,.2f}"],
+                ["Re-centers eseguiti", str(status.get("total_recenters") or 0)],
+            ],
+            "note": "Liquidità concentrata Uniswap V3 su Base. Fee accumulate in tempo reale all'interno del range.",
+        }
+
+    wallet = None
+    balances = status.get("balances") or {}
+    eth_bal = balances.get("ETH")
+    if mode != "paper" and eth_bal is not None:
+        eth = float(eth_bal)
+        weth_px = status.get("current_price", 0.0)
+        wallet = {
+            "address": status.get("wallet"),
+            "eth": eth,
+            "eth_usd": eth * float(weth_px) if weth_px else None,
+            "min_eth": config.MIN_ETH_RESERVE,
+            "warn_eth": 0.005,
+            "extra": [["USDC nel wallet", f"${float(balances.get('USDC') or 0):,.2f}"]],
+        }
+
+    return {
+        "mode": mode,
+        "updated_at": data.get("snapshot_at"),
+        "run_enabled": True,
+        "paper": paper,
+        "wallet": wallet,
+    }
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
@@ -350,10 +546,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         if path in STATIC_ROUTES:
             rel, ctype = STATIC_ROUTES[path]
-            fpath = os.path.join(os.path.dirname(__file__), rel)
+            fpath = os.path.join(STATIC_DIR, rel)
             if os.path.isfile(fpath):
                 self.send_response(200)
                 self.send_header("Content-Type", ctype)
+                self.send_header("Cache-Control", "public, max-age=86400")
                 self.end_headers()
                 with open(fpath, "rb") as fh:
                     self.wfile.write(fh.read())
@@ -365,7 +562,30 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
-            self.wfile.write(HTML_TEMPLATE.encode("utf-8"))
+            self.wfile.write(HTML.encode("utf-8"))
+            return
+
+        if path == "/health":
+            self._send_json(200, {"status": "healthy", "service": "lp-dashboard"})
+            return
+
+        if path == "/api/data":
+            try:
+                st = self.manager.get_status() if self.manager else {}
+                db_data = db_utils.fetch_dashboard_data()
+                meta = build_meta({"status": st, "snapshot_at": db_data.get("snapshot_at")})
+                payload = {
+                    "status": st,
+                    "snapshot_at": db_data.get("snapshot_at"),
+                    "equity": db_data.get("equity", []),
+                    "operations": db_data.get("operations", []),
+                    "meta": meta,
+                    "run_enabled": True,
+                }
+                self._send_json(200, payload)
+            except Exception as exc:
+                logger.error("Errore /api/data: %s", exc)
+                self._send_json(500, {"error": str(exc)})
             return
 
         if path == "/api/status":
@@ -399,10 +619,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
         path = parsed.path
 
         if path == "/api/run":
-            if config.DASHBOARD_ADMIN_TOKEN:
-                provided = self.headers.get("X-Admin-Token", "")
-                if not hmac.compare_digest(provided, config.DASHBOARD_ADMIN_TOKEN):
-                    self._send_json(401, {"error": "Unauthorized"})
+            run_token = os.getenv("DASHBOARD_RUN_TOKEN", config.DASHBOARD_ADMIN_TOKEN)
+            if run_token:
+                provided = self.headers.get("X-Run-Token", "") or self.headers.get("X-Admin-Token", "")
+                if not provided and "Authorization" in self.headers:
+                    auth = self.headers.get("Authorization", "")
+                    if auth.startswith("Bearer "):
+                        provided = auth[7:].strip()
+                if not hmac.compare_digest(provided, run_token):
+                    self._send_json(403, {"error": "Token non valido o mancante", "message": "Token non valido o mancante"})
                     return
 
             def _trigger():
@@ -412,7 +637,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     logger.warning("Errore esecuzione main.py --once: %s", exc)
 
             threading.Thread(target=_trigger, daemon=True).start()
-            self._send_json(200, {"status": "triggered"})
+            self._send_json(200, {"status": "triggered", "message": "Ciclo LP avviato in background."})
             return
 
         self.send_error(404)
@@ -428,6 +653,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
 class ReuseAddrHTTPServer(ThreadingHTTPServer):
     allow_reuse_address = True
+
 
 def run_dashboard(client: Optional[BaseClient] = None, manager: Optional[LpManager] = None):
     DashboardHandler.client = client

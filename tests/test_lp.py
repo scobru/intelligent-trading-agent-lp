@@ -284,6 +284,25 @@ class TestDatabaseUtils(unittest.TestCase):
         self.assertEqual(ops[0]["operation"], "recenter")
         self.assertEqual(ops[0]["amount_usd"], 1000.0)
 
+    def test_fetch_dashboard_data(self):
+        status = {
+            "current_price": 2600.0,
+            "current_tick": -197500,
+            "total_equity_usd": 3000.0,
+            "position": {
+                "current_lp_value_usd": 1500.0,
+                "fees_collected_usd": 50.0,
+                "is_strictly_in_range": True,
+            },
+        }
+        db_utils.log_snapshot(status)
+        db_utils.log_operation({"operation": "mint"}, {"status": "success", "amount_usd": 1500.0})
+
+        dash_data = db_utils.fetch_dashboard_data()
+        self.assertIsNotNone(dash_data.get("snapshot_at"))
+        self.assertGreaterEqual(len(dash_data.get("equity", [])), 1)
+        self.assertGreaterEqual(len(dash_data.get("operations", [])), 1)
+
 
 class TestDashboardAndAgentRobustness(unittest.TestCase):
     def test_dashboard_handles_address_already_in_use(self):
@@ -303,6 +322,33 @@ class TestDashboardAndAgentRobustness(unittest.TestCase):
         finally:
             sock.close()
 
+    def test_build_meta(self):
+        import dashboard
+
+        data = {
+            "snapshot_at": 1700000000.0,
+            "status": {
+                "mode": "paper",
+                "total_equity_usd": 1200.0,
+                "total_fees_collected_usd": 15.0,
+                "total_recenters": 2,
+                "paper": {
+                    "initial_equity_usd": 1000.0,
+                    "total_equity_usd": 1200.0,
+                    "pnl_usd": 200.0,
+                    "operations": 3,
+                    "gas_spent_usd": 0.09,
+                    "created_at": 1699900000.0,
+                }
+            }
+        }
+        meta = dashboard.build_meta(data)
+        self.assertEqual(meta["mode"], "paper")
+        self.assertTrue(meta["run_enabled"])
+        self.assertIsNotNone(meta["paper"])
+        self.assertEqual(meta["paper"]["initial_usd"], 1000.0)
+        self.assertEqual(meta["paper"]["value_usd"], 1200.0)
+
     def test_agent_robust_to_non_json_llm_response(self):
         from lp_agent import LpAgent
 
@@ -318,4 +364,5 @@ class TestDashboardAndAgentRobustness(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
 
