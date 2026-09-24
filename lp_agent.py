@@ -97,7 +97,17 @@ class LpAgent:
         )
 
         raw_text = completion.choices[0].message.content or ""
-        match = re.search(r"\{.*\}", raw_text, re.DOTALL)
+        raw_clean = re.sub(r"^```(?:json)?\s*", "", raw_text.strip(), flags=re.IGNORECASE)
+        raw_clean = re.sub(r"\s*```$", "", raw_clean)
+
+        match = re.search(r"\{.*\}", raw_clean, re.DOTALL)
         if match:
-            return json.loads(match.group(0))
-        return json.loads(raw_text.strip())
+            try:
+                return json.loads(match.group(0))
+            except json.JSONDecodeError:
+                pass
+        try:
+            return json.loads(raw_clean)
+        except json.JSONDecodeError:
+            logger.warning("Risposta OpenRouter non in formato JSON valido: %r", raw_text[:120])
+            return None

@@ -407,7 +407,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
             def _trigger():
                 try:
-                    subprocess.run([sys.executable, "main.py", "--once"], check=False)
+                    subprocess.run([sys.executable, "main.py", "--once", "--no-dashboard"], check=False)
                 except Exception as exc:
                     logger.warning("Errore esecuzione main.py --once: %s", exc)
 
@@ -432,7 +432,11 @@ class ReuseAddrHTTPServer(ThreadingHTTPServer):
 def run_dashboard(client: Optional[BaseClient] = None, manager: Optional[LpManager] = None):
     DashboardHandler.client = client
     DashboardHandler.manager = manager
-    server = ReuseAddrHTTPServer((config.DASHBOARD_HOST, config.DASHBOARD_PORT), DashboardHandler)
+    try:
+        server = ReuseAddrHTTPServer((config.DASHBOARD_HOST, config.DASHBOARD_PORT), DashboardHandler)
+    except OSError as exc:
+        logger.error("Impossibile avviare dashboard su %s:%s - %s", config.DASHBOARD_HOST, config.DASHBOARD_PORT, exc)
+        return
     logger.info("LP Dashboard avviata su http://%s:%s", config.DASHBOARD_HOST, config.DASHBOARD_PORT)
     try:
         server.serve_forever()

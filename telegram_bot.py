@@ -150,3 +150,28 @@ class TelegramNotifier:
             act = {"operation": "collect_fees", "reason": "Raccolta manuale da Telegram"}
             res = self.manager.execute_action(act, st)
             self.send_message(f"💰 Risultato Collect: `{res.get('status')}` - Importo: `${res.get('amount_usd', 0):.2f}`")
+
+
+if __name__ == "__main__":
+    from base_client import BaseClient
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+    cl = BaseClient(rpc_url=config.BASE_RPC_URL)
+    mgr = LpManager(cl)
+    bot = TelegramNotifier(mgr)
+    if bot.enabled:
+        logger.info("📱 Telegram listener avviato in polling...")
+        bot.start_polling()
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            logger.info("Arresto Telegram Bot...")
+        finally:
+            bot.stop()
+    else:
+        logger.info("Telegram Bot disabilitato (TELEGRAM_BOT_TOKEN o TELEGRAM_CHAT_ID non configurati).")
+

@@ -128,12 +128,12 @@ TX_TIMEOUT_SECONDS = int(os.getenv("TX_TIMEOUT_SECONDS", 300))
 TX_DEADLINE_SECONDS = int(os.getenv("TX_DEADLINE_SECONDS", 600))
 
 # ---------------------------------------------------------------- Dashboard
-DASHBOARD_HOST = os.getenv("DASHBOARD_HOST", "127.0.0.1")
-DASHBOARD_PORT = _i("DASHBOARD_PORT", 8081)
+DASHBOARD_HOST = os.getenv("DASHBOARD_HOST", "0.0.0.0")
+DASHBOARD_PORT = _i("DASHBOARD_PORT", _i("PORT", 3000))
 DASHBOARD_ADMIN_TOKEN = os.getenv("DASHBOARD_ADMIN_TOKEN", "")
 
 # ---------------------------------------------------------------- Loop
-LOOP_SLEEP_SECONDS = _i("LOOP_SLEEP_SECONDS", 900)  # controllo ogni 15 minuti
+LOOP_SLEEP_SECONDS = _i("LOOP_SLEEP_SECONDS", _i("TRADING_INTERVAL", 900))  # controllo ogni 15 minuti
 
 
 # ---------------------------------------------------------------- percorsi persistenti

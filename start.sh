@@ -2,13 +2,13 @@
 set -u
 
 echo "========================================================"
-echo "Starting Yield Agent (Base passive yield) on Docker"
+echo "Starting Concentrated LP Agent (Uniswap V3 on Base)"
 echo "========================================================"
 
-# Il rendimento si muove lentamente: un ciclo all'ora basta e avanza
-INTERVAL="${TRADING_INTERVAL:-3600}"
+INTERVAL="${LOOP_SLEEP_SECONDS:-${TRADING_INTERVAL:-900}}"
+PORT="${DASHBOARD_PORT:-${PORT:-3000}}"
 
-echo "[1/2] Starting Web Dashboard on port ${PORT:-3000}..."
+echo "[1/2] Starting Web Dashboard on port ${PORT}..."
 python dashboard.py &
 
 if [ -n "${TELEGRAM_BOT_TOKEN:-}" ]; then
@@ -16,7 +16,7 @@ if [ -n "${TELEGRAM_BOT_TOKEN:-}" ]; then
     python telegram_bot.py &
 fi
 
-echo "[2/2] Starting yield loop (interval: ${INTERVAL}s)..."
+echo "[2/2] Starting LP yield loop (interval: ${INTERVAL}s)..."
 if [ "${PAPER_TRADING:-false}" = "true" ]; then
     echo "📝 PAPER attivo: portafoglio virtuale."
 elif [ "${DRY_RUN:-true}" = "true" ]; then
@@ -25,8 +25,8 @@ fi
 echo ""
 
 while true; do
-    echo "⏰ [$(date -u +%Y-%m-%dT%H:%M:%SZ)] Running yield cycle..."
-    python main.py
+    echo "⏰ [$(date -u +%Y-%m-%dT%H:%M:%SZ)] Running LP cycle..."
+    python main.py --once --no-dashboard
     echo "💤 Sleeping for ${INTERVAL} seconds until next cycle..."
     sleep "${INTERVAL}"
 done

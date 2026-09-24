@@ -285,5 +285,37 @@ class TestDatabaseUtils(unittest.TestCase):
         self.assertEqual(ops[0]["amount_usd"], 1000.0)
 
 
+class TestDashboardAndAgentRobustness(unittest.TestCase):
+    def test_dashboard_handles_address_already_in_use(self):
+        import socket
+        import dashboard
+
+        # Occupy a free port
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.bind(("127.0.0.1", 0))
+        sock.listen(1)
+        busy_port = sock.getsockname()[1]
+
+        try:
+            with patch("config.DASHBOARD_HOST", "127.0.0.1"), patch("config.DASHBOARD_PORT", busy_port):
+                # run_dashboard should log error and return cleanly without raising OSError
+                dashboard.run_dashboard(None, None)
+        finally:
+            sock.close()
+
+    def test_agent_robust_to_non_json_llm_response(self):
+        from lp_agent import LpAgent
+
+        mgr_mock = MagicMock()
+        mgr_mock.plan_action.return_value = {"operation": "hold", "reason": "Deterministic fallback"}
+
+        agent = LpAgent(mgr_mock)
+        with patch.object(agent, "_query_llm", return_value=None):
+            agent.api_key = "dummy_key"
+            res = agent.decide({})
+            self.assertEqual(res["operation"], "hold")
+
+
 if __name__ == "__main__":
     unittest.main()
+
