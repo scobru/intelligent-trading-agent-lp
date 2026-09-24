@@ -156,7 +156,7 @@ class BaseClient:
             ("UNISWAP_V3_FACTORY", config.UNISWAP_V3_FACTORY),
             ("UNISWAP_V3_QUOTER_V2", config.UNISWAP_V3_QUOTER_V2),
             ("UNISWAP_V3_SWAP_ROUTER_02", config.UNISWAP_V3_SWAP_ROUTER_02),
-            ("AAVE_V3_POOL", config.AAVE_V3_POOL),
+            ("UNISWAP_V3_POSITION_MANAGER", config.UNISWAP_V3_POSITION_MANAGER),
         ):
             try:
                 code = self.w3.eth.get_code(Web3.to_checksum_address(addr))

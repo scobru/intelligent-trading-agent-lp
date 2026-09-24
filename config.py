@@ -122,6 +122,11 @@ LLM_FALLBACK_RULES = _b("LLM_FALLBACK_RULES", True)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
+# ---------------------------------------------------------------- HTTP / transazioni
+HTTP_TIMEOUT = int(os.getenv("HTTP_TIMEOUT", 30))  # timeout connessione RPC in secondi
+TX_TIMEOUT_SECONDS = int(os.getenv("TX_TIMEOUT_SECONDS", 300))
+TX_DEADLINE_SECONDS = int(os.getenv("TX_DEADLINE_SECONDS", 600))
+
 # ---------------------------------------------------------------- Dashboard
 DASHBOARD_HOST = os.getenv("DASHBOARD_HOST", "0.0.0.0")
 DASHBOARD_PORT = _i("DASHBOARD_PORT", 8080)

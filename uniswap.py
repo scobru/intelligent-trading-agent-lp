@@ -221,7 +221,7 @@ class UniswapV3:
                 best = Route([token_in, token_out], [fee], amount_in, out)
 
         weth = config.WETH.lower()
-        if weth not in (token_in.lower(), token_out.lower()):
+        if not best and weth not in (token_in.lower(), token_out.lower()):
             for fee_in in config.FEE_TIERS:
                 for fee_out in config.FEE_TIERS:
                     out = self._quote_path(
