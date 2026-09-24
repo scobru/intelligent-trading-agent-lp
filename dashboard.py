@@ -426,10 +426,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
+class ReuseAddrHTTPServer(ThreadingHTTPServer):
+    allow_reuse_address = True
+
 def run_dashboard(client: Optional[BaseClient] = None, manager: Optional[LpManager] = None):
     DashboardHandler.client = client
     DashboardHandler.manager = manager
-    server = ThreadingHTTPServer((config.DASHBOARD_HOST, config.DASHBOARD_PORT), DashboardHandler)
+    server = ReuseAddrHTTPServer((config.DASHBOARD_HOST, config.DASHBOARD_PORT), DashboardHandler)
     logger.info("LP Dashboard avviata su http://%s:%s", config.DASHBOARD_HOST, config.DASHBOARD_PORT)
     try:
         server.serve_forever()
