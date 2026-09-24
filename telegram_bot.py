@@ -108,6 +108,8 @@ class TelegramNotifier:
                 "🤖 *Comandi LP Agent:*\n"
                 "/status - Stato del pool e dell'agente\n"
                 "/position - Dettagli della posizione concentrata attiva\n"
+                "/pools - Scanner migliori pool Uniswap V3 su Base per APY e Volume\n"
+                "/switch <T0> <T1> [fee] - Cambia pool attiva (es. /switch CBBTC USDC 500)\n"
                 "/recenter - Forza il riposizionamento del range sul prezzo corrente\n"
                 "/collect - Raccoglie le commissioni accumulate\n"
                 "/help - Questa guida"
@@ -115,11 +117,13 @@ class TelegramNotifier:
         elif base_cmd == "/status":
             st = self.manager.get_status()
             pos = st.get("position", {})
+            pool_info = st.get("pool", {})
+            t0 = pool_info.get("token0", "WETH")
             in_range = "✅ In-Range" if pos.get("is_strictly_in_range") else "❌ Out-of-Range"
             self.send_message(
                 f"📊 *Stato LP Agent ({st.get('mode', '').upper()})*\n\n"
-                f"Pool: `{st.get('pool', {}).get('pair')}` ({st.get('pool', {}).get('fee_tier') / 10000:.2f}%)\n"
-                f"Prezzo WETH: `${st.get('current_price', 0):.2f}`\n"
+                f"Pool: `{pool_info.get('pair')}` ({pool_info.get('fee_tier', 500) / 10000:.2f}%)\n"
+                f"Prezzo {t0}: `${st.get('current_price', 0):.4f}`\n"
                 f"Stato: {in_range}\n"
                 f"Valore LP: `${pos.get('current_lp_value_usd', 0):.2f}`\n"
                 f"Fee Totali: `${st.get('total_fees_collected_usd', 0):.2f}`\n"
@@ -131,15 +135,54 @@ class TelegramNotifier:
             if not pos.get("has_position"):
                 self.send_message("Nessuna posizione LP attiva.")
                 return
+            t0 = pos.get("token0", "WETH")
+            t1 = pos.get("token1", "USDC")
             self.send_message(
-                f"🎯 *Posizione LP Attiva*\n\n"
-                f"Range: `${pos.get('price_lower', 0):.2f}` - `${pos.get('price_upper', 0):.2f}`\n"
+                f"🎯 *Posizione LP Attiva ({t0}/{t1})*\n\n"
+                f"Range: `${pos.get('price_lower', 0):.4f}` - `${pos.get('price_upper', 0):.4f}`\n"
                 f"Progresso nel range: `{pos.get('range_progress_pct', 0)}%`\n"
-                f"WETH: `{pos.get('amount0', 0):.4f}` | USDC: `${pos.get('amount1', 0):.2f}`\n"
+                f"{t0}: `{pos.get('amount0', 0):.4f}` | {t1}: `${pos.get('amount1', 0):.2f}`\n"
                 f"Impermanent Loss: `{pos.get('impermanent_loss_pct', 0):.2f}%` (${pos.get('impermanent_loss_usd', 0):.2f})\n"
                 f"PnL Netto: `{pos.get('net_pnl_pct', 0):.2f}%` (${pos.get('net_pnl_usd', 0):.2f})\n"
                 f"Tempo in posizione: `{pos.get('position_age_hours', 0)}` ore"
             )
+        elif base_cmd == "/pools":
+            try:
+                from pool_scanner import scanner
+                res = scanner.scan()
+                top = res.get("top", [])[:5]
+                if not top:
+                    self.send_message("Nessuna pool trovata o scanner in aggiornamento.")
+                    return
+                lines = ["🌊 *Top Opportunità Uniswap V3 su Base:*"]
+                for i, p in enumerate(top, 1):
+                    lines.append(
+                        f"{i}. *{p['symbol']}* ({p['fee_tier_pct']})\n"
+                        f"   Fee APY: `{p['apy_base']}%` (30g: `{p['apy_mean_30d']}%`)\n"
+                        f"   TVL: `${p['tvl_usd']:,.0f}` | Vol 24h: `${p['volume_24h_usd']:,.0f}`\n"
+                        f"   Rischio: `{p['risk_level']}`"
+                    )
+                lines.append("\nUsa `/switch <T0> <T1> [fee]` per attivare una pool.")
+                self.send_message("\n".join(lines))
+            except Exception as exc:
+                self.send_message(f"Errore scanner pool: {exc}")
+        elif base_cmd == "/switch":
+            if len(parts) < 3:
+                self.send_message("Uso: `/switch <TOKEN0> <TOKEN1> [fee_tier]`\nEsempio: `/switch CBBTC USDC 500`")
+                return
+            t0 = parts[1].upper()
+            t1 = parts[2].upper()
+            fee = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 500
+            res = self.manager.switch_pool(t0, t1, fee)
+            if res.get("status") == "success":
+                self.send_message(
+                    f"✅ *Pool Attiva Cambiata!*\n\n"
+                    f"Coppia: `{res['pair']}` ({res['fee_tier'] / 10000:.2f}%)\n"
+                    f"Prezzo attuale: `${res['current_price']:.4f}`\n"
+                    f"Pool Address: `{res['pool_address']}`"
+                )
+            else:
+                self.send_message(f"❌ Errore cambio pool: {res.get('reason')}")
         elif base_cmd == "/recenter":
             st = self.manager.get_status()
             act = {"operation": "recenter", "reason": "Re-center manuale richiesto da Telegram"}

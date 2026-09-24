@@ -7,7 +7,8 @@ esce dai bordi definiti, minimizzando l'impermanent loss e massimizzando il rend
 """
 
 import os
-from typing import Dict
+import time
+from typing import Any, Dict, Optional
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -47,6 +48,13 @@ USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
 CBBTC = "0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf"
 WSTETH = "0xc1CBa3fCea344f92D9239c08C0568f6F2F0ee452"
 CBETH = "0x2Ae3F1Ec7F1F5012CFEab0185bfc7aa3cf0DEc22"
+AERO = "0x940181a94A35A4569E4529A3CDfB74e48FD98AE3"
+EURC = "0x60a3E35Cc302bFA44Cb288Bc5a4F316Fdb1adb42"
+DEGEN = "0x4ed4E862860beD51a9570b96d89aF5E1B0Efefed"
+VIRTUAL = "0x0b3e328455c4059EEb9e3f84b5543F74E24e7E1b"
+USDBC = "0xd9aAEc86B65D86f6A7B5B1b0c42FFA531710b6CA"
+TBTC = "0x236aa50979D5f3De3Bd1Eeb40E81137F22ab794b"
+LINK = "0x88Fb150BDc53A65fe94Dea0c9BA0a6dAf8C6e196"
 
 KNOWN_ASSETS: Dict[str, Dict[str, any]] = {
     "USDC": {"address": USDC, "decimals": 6, "symbol": "USDC"},
@@ -54,6 +62,13 @@ KNOWN_ASSETS: Dict[str, Dict[str, any]] = {
     "CBBTC": {"address": CBBTC, "decimals": 8, "symbol": "CBBTC"},
     "wstETH": {"address": WSTETH, "decimals": 18, "symbol": "wstETH"},
     "cbETH": {"address": CBETH, "decimals": 18, "symbol": "cbETH"},
+    "AERO": {"address": AERO, "decimals": 18, "symbol": "AERO"},
+    "EURC": {"address": EURC, "decimals": 6, "symbol": "EURC"},
+    "DEGEN": {"address": DEGEN, "decimals": 18, "symbol": "DEGEN"},
+    "VIRTUAL": {"address": VIRTUAL, "decimals": 18, "symbol": "VIRTUAL"},
+    "USDbC": {"address": USDBC, "decimals": 6, "symbol": "USDbC"},
+    "tBTC": {"address": TBTC, "decimals": 18, "symbol": "tBTC"},
+    "LINK": {"address": LINK, "decimals": 18, "symbol": "LINK"},
 }
 
 # ---------------------------------------------------------------- contratti Uniswap V3 su Base
@@ -148,3 +163,76 @@ def persistent_path(filename: str) -> str:
 SQLITE_DB_PATH = os.getenv("SQLITE_DB_PATH") or persistent_path("lp_agent.db")
 POSITION_STATE_PATH = os.getenv("POSITION_STATE_PATH") or persistent_path("lp_position.json")
 PAPER_STATE_PATH = os.getenv("PAPER_STATE_PATH") or persistent_path("paper_lp.json")
+POOL_CONFIG_PATH = os.getenv("POOL_CONFIG_PATH") or persistent_path("lp_pool_config.json")
+
+
+def get_active_pool_config() -> Dict[str, Any]:
+    """Recupera la configurazione della pool attiva, leggendo da file persistente se presente."""
+    if os.path.isfile(POOL_CONFIG_PATH):
+        try:
+            import json
+            with open(POOL_CONFIG_PATH, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+                if data.get("token0") and data.get("token1"):
+                    return {
+                        "token0": str(data["token0"]).upper(),
+                        "token1": str(data["token1"]).upper(),
+                        "fee": int(data.get("fee", POOL_FEE)),
+                    }
+        except Exception:
+            pass
+    return {
+        "token0": POOL_TOKEN0_SYMBOL,
+        "token1": POOL_TOKEN1_SYMBOL,
+        "fee": POOL_FEE,
+    }
+
+
+def get_token_meta(symbol_or_address: str) -> Optional[Dict[str, Any]]:
+    """Cerca metadati di un token per simbolo o indirizzo."""
+    if not symbol_or_address:
+        return None
+    target = symbol_or_address.strip()
+    target_upper = target.upper()
+    target_lower = target.lower()
+
+    for sym, data in KNOWN_ASSETS.items():
+        if sym.upper() == target_upper or data.get("address", "").lower() == target_lower:
+            return data
+    return None
+
+
+def get_token_decimals(symbol_or_address: str, default: int = 18) -> int:
+    """Restituisce i decimali del token da KNOWN_ASSETS o default."""
+    meta = get_token_meta(symbol_or_address)
+    if meta and "decimals" in meta:
+        return int(meta["decimals"])
+    return default
+
+
+def get_token_address(symbol_or_address: str) -> str:
+    """Restituisce l'indirizzo del token da KNOWN_ASSETS se noto, altrimenti la stringa stessa."""
+    meta = get_token_meta(symbol_or_address)
+    if meta and "address" in meta:
+        return str(meta["address"])
+    return symbol_or_address
+
+
+def save_active_pool_config(token0: str, token1: str, fee: int) -> bool:
+    """Salva su file persistente la configurazione della pool attiva."""
+    try:
+        import json
+        os.makedirs(os.path.dirname(os.path.abspath(POOL_CONFIG_PATH)), exist_ok=True)
+        payload = {
+            "token0": token0.upper(),
+            "token1": token1.upper(),
+            "fee": int(fee),
+            "updated_at": time.time(),
+        }
+        with open(POOL_CONFIG_PATH, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, indent=2)
+        return True
+    except Exception:
+        return False
+
+

@@ -30,25 +30,35 @@ class LpManager:
         self.v3_lp = UniswapV3Lp(client)
         self.tracker = PositionTracker()
         self.paper = PaperLpBook() if config.PAPER_TRADING else None
+
+        active_cfg = config.get_active_pool_config()
+        self.token0_symbol = active_cfg.get("token0", config.POOL_TOKEN0_SYMBOL).upper()
+        self.token1_symbol = active_cfg.get("token1", config.POOL_TOKEN1_SYMBOL).upper()
+        self.fee_tier = int(active_cfg.get("fee", config.POOL_FEE))
+        self.token0_decimals = config.get_token_decimals(self.token0_symbol, 18)
+        self.token1_decimals = config.get_token_decimals(self.token1_symbol, 6)
+
         self._pool_address: Optional[str] = None
         self._cached_price: Optional[float] = None
+        self.last_tick: int = 0
         self._last_price_time: float = 0.0
 
     # ------------------------------------------------------------ pool & prezzo
     def get_pool_address(self) -> str:
         if self._pool_address is None:
-            token0 = config.KNOWN_ASSETS[config.POOL_TOKEN0_SYMBOL]["address"]
-            token1 = config.KNOWN_ASSETS[config.POOL_TOKEN1_SYMBOL]["address"]
+            token0 = config.get_token_address(self.token0_symbol)
+            token1 = config.get_token_address(self.token1_symbol)
             try:
-                self._pool_address = self.v3_lp.get_pool_address(token0, token1, config.POOL_FEE)
+                self._pool_address = self.v3_lp.get_pool_address(token0, token1, self.fee_tier)
             except Exception as exc:
                 logger.warning("Impossibile recuperare pool address da Factory: %s", exc)
-                self._pool_address = "0xd4405F0704621DBe9d4dEA60E128E0C3b26bddbD"  # Fallback noto pool WETH/USDC 0.05%
-        return self._pool_address
+                if self.token0_symbol == "WETH" and self.token1_symbol == "USDC" and self.fee_tier == 500:
+                    self._pool_address = "0xd4405F0704621DBe9d4dEA60E128E0C3b26bddbD"
+        return self._pool_address or "0x0000000000000000000000000000000000000000"
 
     def get_current_price_and_tick(self) -> Tuple[float, int]:
         """
-        Recupera il prezzo human readable (USDC per WETH) e il tick corrente.
+        Recupera il prezzo human readable (token1 per token0) e il tick corrente.
         Usa cache di 15 secondi per ottimizzare le chiamate RPC.
         """
         now = time.time()
@@ -60,7 +70,7 @@ class LpManager:
             state = self.v3_lp.get_pool_state(pool_addr)
             sqrt_p = state["sqrtPriceX96"]
             tick = state["tick"]
-            price = lp_math.sqrt_price_x96_to_human_price(sqrt_p, decimals0=18, decimals1=6)
+            price = lp_math.sqrt_price_x96_to_human_price(sqrt_p, decimals0=self.token0_decimals, decimals1=self.token1_decimals)
             self._cached_price = price
             self.last_tick = tick
             self._last_price_time = now
@@ -68,9 +78,12 @@ class LpManager:
         except Exception as exc:
             logger.warning("Errore lettura slot0 dal pool: %s. Tento tramite Uniswap Quoter...", exc)
             try:
-                price = self.uniswap.price_in_quote(config.WETH, config.USDC, probe_units=0.01)
+                addr0 = config.get_token_address(self.token0_symbol)
+                addr1 = config.get_token_address(self.token1_symbol)
+                probe = 0.01 if self.token0_decimals == 18 else 1.0
+                price = self.uniswap.price_in_quote(addr0, addr1, probe_units=probe)
                 if price:
-                    tick = lp_math.human_price_to_tick(price, 18, 6)
+                    tick = lp_math.human_price_to_tick(price, self.token0_decimals, self.token1_decimals)
                     self._cached_price = price
                     self.last_tick = tick
                     self._last_price_time = now
@@ -80,13 +93,67 @@ class LpManager:
 
         # Fallback se offline/mock
         fallback_price = self._cached_price or 2500.0
-        fallback_tick = lp_math.human_price_to_tick(fallback_price, 18, 6)
+        fallback_tick = lp_math.human_price_to_tick(fallback_price, self.token0_decimals, self.token1_decimals)
         return fallback_price, fallback_tick
+
+    def switch_pool(self, token0_sym: str, token1_sym: str, fee_tier: Optional[int] = None) -> Dict[str, Any]:
+        """
+        Cambia dinamicamente la pool attiva su cui l'agente opera.
+        """
+        t0 = token0_sym.strip().upper()
+        t1 = token1_sym.strip().upper()
+        if not t0 or not t1 or t0 == t1:
+            return {"status": "error", "reason": f"Coppia token non valida: {t0}/{t1}"}
+
+        fee = int(fee_tier or self.fee_tier or 500)
+        logger.info("Switching LP pool to %s/%s (fee: %d)...", t0, t1, fee)
+
+        config.save_active_pool_config(t0, t1, fee)
+        self.token0_symbol = t0
+        self.token1_symbol = t1
+        self.fee_tier = fee
+        self.token0_decimals = config.get_token_decimals(t0, 18)
+        self.token1_decimals = config.get_token_decimals(t1, 6)
+
+        # Invalida cache
+        self._pool_address = None
+        self._cached_price = None
+        self._last_price_time = 0.0
+
+        # Se in paper mode e c'era una posizione aperta su altra coppia, chiudila
+        if self.paper and self.paper.active_position:
+            old_p = self.paper.active_position
+            old_t0 = old_p.get("token0")
+            old_t1 = old_p.get("token1")
+            if old_t0 != t0 or old_t1 != t1:
+                logger.info("Chiusura automatica posizione precedente su %s/%s per switch a %s/%s", old_t0, old_t1, t0, t1)
+                curr_price, _ = self.get_current_price_and_tick()
+                self.paper.close_and_recenter(curr_price, config.RANGE_WIDTH_PCT)
+
+        price, tick = self.get_current_price_and_tick()
+        pool_addr = self.get_pool_address()
+
+        return {
+            "status": "success",
+            "pair": f"{t0}/{t1}",
+            "token0": t0,
+            "token1": t1,
+            "fee_tier": fee,
+            "pool_address": pool_addr,
+            "current_price": price,
+            "current_tick": tick,
+        }
 
     # ------------------------------------------------------------ stato complessivo
     def get_status(self) -> Dict[str, Any]:
         price, tick = self.get_current_price_and_tick()
-        prices = {"USDC": 1.0, "WETH": price, "ETH": price}
+        prices = {
+            self.token1_symbol: 1.0,
+            self.token0_symbol: price,
+            "USDC": 1.0,
+            "WETH": price if self.token0_symbol == "WETH" else 2500.0,
+            "ETH": price if self.token0_symbol == "WETH" else 2500.0,
+        }
 
         if self.paper:
             # Sincronizza lo stato della posizione attiva nel tracker
@@ -100,9 +167,11 @@ class LpManager:
         else:
             pos_eval = self.tracker.evaluate(price, tick, prices)
             mode = "dry_run" if config.DRY_RUN else "live"
+            t0_addr = config.get_token_address(self.token0_symbol)
+            t1_addr = config.get_token_address(self.token1_symbol)
             balances = {
-                "USDC": self.client.balance_of_float(config.USDC) if self.client.address else 0.0,
-                "WETH": self.client.balance_of_float(config.WETH) if self.client.address else 0.0,
+                self.token1_symbol: self.client.balance_of_float(t1_addr) if self.client.address else 0.0,
+                self.token0_symbol: self.client.balance_of_float(t0_addr) if self.client.address else 0.0,
                 "ETH": self.client.eth_balance() if self.client.address else 0.0,
             }
             paper_summary = None
@@ -118,8 +187,10 @@ class LpManager:
             "wallet": self.client.address if self.client else "",
             "pool": {
                 "address": self.get_pool_address(),
-                "pair": f"{config.POOL_TOKEN0_SYMBOL}/{config.POOL_TOKEN1_SYMBOL}",
-                "fee_tier": config.POOL_FEE,
+                "pair": f"{self.token0_symbol}/{self.token1_symbol}",
+                "fee_tier": self.fee_tier,
+                "token0": self.token0_symbol,
+                "token1": self.token1_symbol,
             },
             "current_price": price,
             "current_tick": tick,
@@ -202,19 +273,29 @@ class LpManager:
         w = action.get("range_width_pct", config.RANGE_WIDTH_PCT)
 
         if self.paper:
-            res = self.paper.mint_position(price, w)
+            res = self.paper.mint_position(
+                price, w,
+                token0_sym=self.token0_symbol,
+                token1_sym=self.token1_symbol,
+                fee_tier=self.fee_tier,
+            )
             if res.get("status") == "success":
                 self.tracker.set_active_position(res["position"])
             return res
 
         if config.DRY_RUN:
-            tick_l, tick_u, p_l, p_u = lp_math.calculate_range_ticks(price, w, config.POOL_FEE)
+            tick_l, tick_u, p_l, p_u = lp_math.calculate_range_ticks(
+                price, w, self.fee_tier,
+                decimals0=self.token0_decimals, decimals1=self.token1_decimals
+            )
             plan = f"mint Uniswap V3 LP NFT: range [${p_l:.2f} - ${p_u:.2f}], tick [{tick_l} - {tick_u}]"
             sim_pos = {
                 "token_id": 999999,
-                "token0": config.POOL_TOKEN0_SYMBOL,
-                "token1": config.POOL_TOKEN1_SYMBOL,
-                "fee": config.POOL_FEE,
+                "token0": self.token0_symbol,
+                "token1": self.token1_symbol,
+                "decimals0": self.token0_decimals,
+                "decimals1": self.token1_decimals,
+                "fee": self.fee_tier,
                 "tick_lower": tick_l,
                 "tick_upper": tick_u,
                 "price_lower": p_l,
@@ -229,19 +310,22 @@ class LpManager:
             return {"status": "dry_run", "operation": "mint", "plan": plan, "position": sim_pos}
 
         # Live mint on-chain
-        token0 = config.KNOWN_ASSETS[config.POOL_TOKEN0_SYMBOL]["address"]
-        token1 = config.KNOWN_ASSETS[config.POOL_TOKEN1_SYMBOL]["address"]
-        tick_l, tick_u, p_l, p_u = lp_math.calculate_range_ticks(price, w, config.POOL_FEE)
+        token0 = config.get_token_address(self.token0_symbol)
+        token1 = config.get_token_address(self.token1_symbol)
+        tick_l, tick_u, p_l, p_u = lp_math.calculate_range_ticks(
+            price, w, self.fee_tier,
+            decimals0=self.token0_decimals, decimals1=self.token1_decimals
+        )
 
-        # Calcola ammontari desiderati (es. 50% del saldo USDC disponibile)
-        usdc_bal = self.client.balance_of_float(config.USDC)
-        amt1_desired = int(min(usdc_bal * 0.8, 1000.0) * 1e6)
-        amt0_desired = int(((amt1_desired / 1e6) / price) * 1e18)
+        # Calcola ammontari desiderati
+        t1_bal = self.client.balance_of_float(token1)
+        amt1_desired = int(min(t1_bal * 0.8, 1000.0) * (10 ** self.token1_decimals))
+        amt0_desired = int(((amt1_desired / (10 ** self.token1_decimals)) / price) * (10 ** self.token0_decimals))
 
         tx_hash = self.v3_lp.mint_position(
             token0=token0,
             token1=token1,
-            fee=config.POOL_FEE,
+            fee=self.fee_tier,
             tick_lower=tick_l,
             tick_upper=tick_u,
             amount0_desired=amt0_desired,
@@ -266,7 +350,10 @@ class LpManager:
             return res
 
         if config.DRY_RUN:
-            tick_l, tick_u, p_l, p_u = lp_math.calculate_range_ticks(price, w, config.POOL_FEE)
+            tick_l, tick_u, p_l, p_u = lp_math.calculate_range_ticks(
+                price, w, self.fee_tier,
+                decimals0=self.token0_decimals, decimals1=self.token1_decimals
+            )
             plan = f"decreaseLiquidity + collect old NFT -> swap balances -> mint new NFT [${p_l:.2f} - ${p_u:.2f}]"
             new_pos = dict(old_pos, price_lower=p_l, price_upper=p_u, tick_lower=tick_l, tick_upper=tick_u, entry_price=price)
             self.tracker.record_recenter(old_pos, new_pos)

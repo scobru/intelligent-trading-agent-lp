@@ -5,6 +5,7 @@ Condivide il design system (Inter, JetBrains Mono, ITA helpers, Chart.js, badge 
 con gli altri agenti della suite (DCA, Yield, Neutral, Degen).
 """
 
+import datetime
 import hmac
 import json
 import logging
@@ -12,6 +13,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Optional
 from urllib.parse import urlparse
@@ -22,6 +24,7 @@ load_dotenv()
 
 import config
 import db_utils
+import pool_scanner
 from base_client import BaseClient
 from lp_manager import LpManager
 
@@ -66,6 +69,34 @@ HTML = r"""<!DOCTYPE html>
 :root {
   --primary: #8b5cf6;
   --accent: #a855f7;
+}
+.btn-sm {
+  padding: 5px 12px;
+  font-size: 11px;
+  border-radius: 6px;
+}
+.btn-sm:hover:not(:disabled) {
+  opacity: 0.9;
+  transform: translateY(-1px);
+}
+.pool-pair {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  font-family: 'JetBrains Mono', monospace;
+}
+.pool-active-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--success);
+  background: rgba(16, 185, 129, 0.12);
+  border: 1px solid rgba(16, 185, 129, 0.35);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 9999px;
 }
 .range-visualizer {
   background: var(--surface-2);
@@ -144,7 +175,7 @@ HTML = r"""<!DOCTYPE html>
     <img src="/static/icon.svg" alt="">
     <div>
       <h1>Concentrated LP Agent <span class="badge b-no" id="mode">…</span></h1>
-      <p class="tagline">Liquidità concentrata su Base • Uniswap V3 (WETH/USDC) • OpenRouter AI • SQLite</p>
+      <p class="tagline">Liquidità concentrata su Base • Scanner Uniswap V3 Multi-Pool • OpenRouter AI • SQLite</p>
     </div>
   </div>
   <div class="header-actions">
@@ -168,10 +199,10 @@ HTML = r"""<!DOCTYPE html>
   <div class="card">
     <h3>Valore Posizione LP</h3>
     <div class="value" id="total">--</div>
-    <div class="sub" id="total-sub">-- WETH / -- USDC</div>
+    <div class="sub" id="total-sub">--</div>
   </div>
   <div class="card">
-    <h3>Prezzo WETH &amp; Range</h3>
+    <h3 id="curr-price-title">Prezzo &amp; Range</h3>
     <div class="value" id="curr-price">--</div>
     <div class="sub" id="range-badge-wrap"><span class="badge b-no" id="range-status">--</span></div>
   </div>
@@ -191,7 +222,7 @@ HTML = r"""<!DOCTYPE html>
   <div class="card-head">
     <div class="tabs" data-tabs="chart">
       <button class="tab active" data-tab="equity">💼 Andamento capitale</button>
-      <button class="tab" data-tab="price">📈 Prezzo WETH vs Equity</button>
+      <button class="tab" data-tab="price">📈 Prezzo vs Equity</button>
     </div>
   </div>
   <div class="chart-box tall"><canvas id="equity"></canvas></div>
@@ -222,9 +253,40 @@ HTML = r"""<!DOCTYPE html>
   </div>
 </section>
 
+<!-- SCANNER DELLE MIGLIORI OPPORTUNITA' POOL UNISWAP V3 -->
+<section class="card section" id="pools-section">
+  <div class="card-head">
+    <div>
+      <h2>🌊 Opportunità Liquidity Pool <small>Scanner live Uniswap V3 su Base Chain</small></h2>
+    </div>
+    <div class="tabs" data-tabs="pools">
+      <button class="tab active" data-tab="top">🔥 Top Score</button>
+      <button class="tab" data-tab="bluechips">💎 Bluechips &amp; Stabili</button>
+      <button class="tab" data-tab="high_yield">🚀 Alto Rendimento</button>
+      <button class="tab" data-tab="all">🌐 Tutte le Pool</button>
+    </div>
+  </div>
+  <div class="table-wrap"><table>
+    <thead>
+      <tr>
+        <th>Coppia</th>
+        <th>Tier</th>
+        <th>TVL</th>
+        <th>Volume 24h</th>
+        <th>Fee APY (Live)</th>
+        <th>Media 30g</th>
+        <th>Turnover 24h</th>
+        <th>Rischio IL</th>
+        <th style="text-align:right">Azione</th>
+      </tr>
+    </thead>
+    <tbody id="pools-tbody"><tr><td colspan="9" class="empty">Caricamento opportunità in corso...</td></tr></tbody>
+  </table></div>
+</section>
+
 <div class="grid-2">
   <section class="card">
-    <div class="card-head"><h2>📊 Composizione Posizione LP</h2><small id="pos-note">WETH / USDC su Base</small></div>
+    <div class="card-head"><h2>📊 Composizione Posizione LP</h2><small id="pos-note">Pool su Base</small></div>
     <div class="table-wrap"><table>
       <thead><tr><th>Asset</th><th>Quantità</th><th>Prezzo</th><th>Valore USD</th><th>Quota LP</th></tr></thead>
       <tbody id="assets"></tbody>
@@ -254,14 +316,17 @@ HTML = r"""<!DOCTYPE html>
 <footer class="footer">Concentrated LP Agent • Liquidità Concentrata su Base (Uniswap V3) &amp; OpenRouter AI • CapRover &amp; Docker</footer>
 
 <script>
-const { $, esc, isNum, usd, signedUsd, pct, signedPct, price, cls, time, empty, sideBadge, statusBadge } = ITA;
-let chart = null, data = null, chartTab = 'equity';
+const { $, esc, isNum, usd, signedUsd, pct, signedPct, price, big, cls, time, empty, sideBadge, statusBadge } = ITA;
+let chart = null, data = null, chartTab = 'equity', poolsTab = 'top';
 
 function renderStatus(s) {
   if (!s) return;
   const pos = s.position || {};
   const balances = s.balances || {};
   const currPrice = s.current_price || 0;
+  const pool = s.pool || {};
+  const t0 = pool.token0 || 'WETH';
+  const t1 = pool.token1 || 'USDC';
 
   const lpVal = pos.current_lp_value_usd || 0;
   const totVal = s.total_equity_usd || (s.paper ? s.paper.total_equity_usd : lpVal + (balances.total_usd || 0));
@@ -269,8 +334,9 @@ function renderStatus(s) {
 
   const amt0 = pos.amount0 || 0;
   const amt1 = pos.amount1 || 0;
-  $('total-sub').textContent = `${amt0.toFixed(4)} WETH / ${usd(amt1)}`;
+  $('total-sub').textContent = `${amt0.toFixed(4)} ${t0} / ${usd(amt1)}`;
 
+  $('curr-price-title').textContent = `Prezzo ${t0} & Range`;
   $('curr-price').textContent = usd(currPrice);
   const inRange = pos.is_strictly_in_range;
   const hasPos = pos.has_position;
@@ -296,6 +362,8 @@ function renderStatus(s) {
   const netPnlPct = pos.net_pnl_pct || 0;
   $('il-val').innerHTML = `<span class="${cls(il)}">${il >= 0 ? '+' : ''}${il.toFixed(2)}%</span>`;
   $('pnl-sub').innerHTML = `Net PnL: <span class="${cls(netPnl)}">${signedUsd(netPnl)} (${signedPct(netPnlPct)})</span>`;
+
+  $('pos-note').textContent = `${pool.pair || 'WETH/USDC'} su Base`;
 
   renderRange(s);
   renderAssets(s);
@@ -355,29 +423,32 @@ function renderAssets(s) {
   const pos = s.position || {};
   const currPrice = s.current_price || 0;
   const balances = s.balances || {};
+  const pool = s.pool || {};
+  const t0 = pool.token0 || 'WETH';
+  const t1 = pool.token1 || 'USDC';
 
   const rows = [];
   const lpVal = pos.current_lp_value_usd || 0;
 
   if (pos.amount0 != null || pos.amount1 != null) {
-    const wethVal = (pos.amount0 || 0) * currPrice;
-    const usdcVal = pos.amount1 || 0;
-    const wethPct = lpVal > 0 ? (wethVal / lpVal * 100) : 0;
-    const usdcPct = lpVal > 0 ? (usdcVal / lpVal * 100) : 0;
+    const t0Val = (pos.amount0 || 0) * currPrice;
+    const t1Val = pos.amount1 || 0;
+    const t0Pct = lpVal > 0 ? (t0Val / lpVal * 100) : 0;
+    const t1Pct = lpVal > 0 ? (t1Val / lpVal * 100) : 0;
 
     rows.push({
-      symbol: 'WETH (in LP)',
+      symbol: `${t0} (in LP)`,
       amount: (pos.amount0 || 0).toFixed(4),
       price: usd(currPrice),
-      value: usd(wethVal),
-      weight: `${wethPct.toFixed(1)}%`,
+      value: usd(t0Val),
+      weight: `${t0Pct.toFixed(1)}%`,
     });
     rows.push({
-      symbol: 'USDC (in LP)',
+      symbol: `${t1} (in LP)`,
       amount: (pos.amount1 || 0).toFixed(2),
       price: usd(1.0),
-      value: usd(usdcVal),
-      weight: `${usdcPct.toFixed(1)}%`,
+      value: usd(t1Val),
+      weight: `${t1Pct.toFixed(1)}%`,
     });
   }
 
@@ -409,6 +480,77 @@ function renderAssets(s) {
   </tr>`).join('') || empty(5, 'Nessun asset attivo.');
 }
 
+function renderPools(poolsObj, activePool) {
+  if (!poolsObj) return;
+  const tbody = $('pools-tbody');
+  if (!tbody) return;
+
+  let list = [];
+  if (poolsTab === 'top') list = poolsObj.top || [];
+  else if (poolsTab === 'bluechips') list = poolsObj.bluechips || [];
+  else if (poolsTab === 'high_yield') list = poolsObj.high_yield || [];
+  else if (poolsTab === 'all') {
+    list = [...(poolsObj.top || []), ...(poolsObj.bluechips || []), ...(poolsObj.high_yield || [])];
+    const seen = new Set();
+    list = list.filter(p => {
+      const k = `${p.symbol}-${p.fee_tier}`;
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+  }
+
+  const activePair = (activePool?.pair || 'WETH/USDC').toUpperCase();
+  const activeFee = Number(activePool?.fee_tier || 500);
+
+  if (!list.length) {
+    tbody.innerHTML = empty(9, 'Nessuna pool trovata per questa categoria.');
+    return;
+  }
+
+  tbody.innerHTML = list.map(p => {
+    const isCur = (p.symbol.toUpperCase() === activePair || `${p.token0}/${p.token1}`.toUpperCase() === activePair) && (p.fee_tier === activeFee);
+    const rClass = p.risk_level === 'Basso' ? 'b-ok' : (p.risk_level === 'Medio' ? 'b-info' : 'b-bad');
+    const actionHtml = isCur
+      ? `<span class="pool-active-badge">● IN USO</span>`
+      : `<button class="btn btn-sm" onclick="switchPool('${p.token0}', '${p.token1}', ${p.fee_tier})">Attiva</button>`;
+
+    return `<tr>
+      <td><span class="pool-pair">${esc(p.symbol)}</span></td>
+      <td><span class="badge b-no">${esc(p.fee_tier_pct)}</span></td>
+      <td class="num">${big(p.tvl_usd)}</td>
+      <td class="num">${big(p.volume_24h_usd)}</td>
+      <td class="num"><b style="color:var(--success)">${p.apy_base.toFixed(2)}%</b></td>
+      <td class="num">${p.apy_mean_30d.toFixed(2)}%</td>
+      <td class="num">${p.efficiency.toFixed(2)}x</td>
+      <td><span class="badge ${rClass}">${esc(p.risk_level)}</span></td>
+      <td style="text-align:right">${actionHtml}</td>
+    </tr>`;
+  }).join('');
+}
+
+async function switchPool(t0, t1, fee) {
+  if (!confirm(`Vuoi impostare ${t0}/${t1} (${(fee/10000).toFixed(2)}%) come pool attiva dell'agente LP?`)) {
+    return;
+  }
+  try {
+    const res = await fetch('/api/switch-pool', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token0: t0, token1: t1, fee: fee })
+    });
+    const result = await res.json();
+    if (res.ok && result.status === 'success') {
+      alert(`✅ Pool attiva impostata su ${result.pair}!\nPrezzo corrente: $${result.current_price}\nL'agente inizierà a gestire questa posizione.`);
+      await load();
+    } else {
+      alert('Errore switch pool: ' + (result.reason || result.error || 'Operazione non riuscita'));
+    }
+  } catch (err) {
+    alert('Errore di rete durante lo switch pool: ' + err.message);
+  }
+}
+
 function renderChart(points) {
   if (!points || !points.length) return;
   const labels = points.map(p => time(p.created_at));
@@ -420,7 +562,7 @@ function renderChart(points) {
     ]);
   } else {
     chart = ITA.lineChart(chart, $('equity'), labels, [
-      { label: 'Prezzo WETH ($)', data: points.map(p => p.current_price) },
+      { label: 'Prezzo ($)', data: points.map(p => p.current_price) },
     ]);
   }
 }
@@ -440,6 +582,8 @@ function renderOps(ops) {
         detail = `Range ${d.range_width_pct ? '±' + (d.range_width_pct/2).toFixed(1) + '%' : ''}`;
       } else if (o.operation === 'recenter') {
         detail = d.old_range ? `Da ${d.old_range}` : 'Riposizionamento range';
+      } else if (o.operation === 'switch_pool') {
+        detail = `Cambio pool a ${d.pair || ''}`;
       } else if (o.operation === 'collect_fees') {
         detail = 'Riscossione commissioni pool';
       } else {
@@ -470,11 +614,16 @@ async function load() {
   renderStatus(data.status);
   renderChart(data.equity || []);
   renderOps(data.operations || []);
+  renderPools(data.pools, data.status?.pool);
 }
 
 ITA.setupTabs('chart', (t) => {
   chartTab = t;
   renderChart(data?.equity || []);
+});
+ITA.setupTabs('pools', (t) => {
+  poolsTab = t;
+  renderPools(data?.pools, data?.status?.pool);
 });
 ITA.setupRun(load);
 load();
@@ -483,6 +632,22 @@ setInterval(load, 15000);
 </body>
 </html>
 """
+
+
+def _iso_or_none(ts: Any) -> Optional[str]:
+    """Formatta timestamp in stringa ISO/UTC leggibile da ITA.time in dashboard.js."""
+    if ts is None:
+        return None
+    try:
+        if isinstance(ts, (int, float)):
+            dt = datetime.datetime.fromtimestamp(float(ts), tz=datetime.timezone.utc)
+            return dt.strftime("%Y-%m-%d %H:%M:%S")
+        elif isinstance(ts, str) and ts.replace('.', '', 1).isdigit():
+            dt = datetime.datetime.fromtimestamp(float(ts), tz=datetime.timezone.utc)
+            return dt.strftime("%Y-%m-%d %H:%M:%S")
+        return str(ts)
+    except Exception:
+        return str(ts)
 
 
 def build_meta(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -526,7 +691,7 @@ def build_meta(data: Dict[str, Any]) -> Dict[str, Any]:
 
     return {
         "mode": mode,
-        "updated_at": data.get("snapshot_at"),
+        "updated_at": _iso_or_none(data.get("snapshot_at") or time.time()),
         "run_enabled": True,
         "paper": paper,
         "wallet": wallet,
@@ -569,16 +734,27 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"status": "healthy", "service": "lp-dashboard"})
             return
 
+        if path == "/api/pools":
+            try:
+                pools_data = pool_scanner.scanner.scan()
+                self._send_json(200, pools_data)
+            except Exception as exc:
+                logger.error("Errore /api/pools: %s", exc)
+                self._send_json(500, {"error": str(exc)})
+            return
+
         if path == "/api/data":
             try:
                 st = self.manager.get_status() if self.manager else {}
                 db_data = db_utils.fetch_dashboard_data()
                 meta = build_meta({"status": st, "snapshot_at": db_data.get("snapshot_at")})
+                pools_data = pool_scanner.scanner.scan()
                 payload = {
                     "status": st,
-                    "snapshot_at": db_data.get("snapshot_at"),
+                    "snapshot_at": _iso_or_none(db_data.get("snapshot_at") or time.time()),
                     "equity": db_data.get("equity", []),
                     "operations": db_data.get("operations", []),
+                    "pools": pools_data,
                     "meta": meta,
                     "run_enabled": True,
                 }
@@ -617,6 +793,37 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         parsed = urlparse(self.path)
         path = parsed.path
+
+        if path == "/api/switch-pool":
+            try:
+                clen = int(self.headers.get("Content-Length", 0))
+                raw_body = self.rfile.read(clen) if clen > 0 else b"{}"
+                payload = json.loads(raw_body.decode("utf-8")) if raw_body else {}
+                t0 = str(payload.get("token0", "")).strip().upper()
+                t1 = str(payload.get("token1", "")).strip().upper()
+                fee = int(payload.get("fee", 500))
+
+                if not t0 or not t1 or t0 == t1:
+                    self._send_json(400, {"status": "error", "reason": "Coppia token non valida."})
+                    return
+
+                if not self.manager:
+                    self._send_json(500, {"status": "error", "reason": "Manager non inizializzato."})
+                    return
+
+                res = self.manager.switch_pool(t0, t1, fee)
+                if res.get("status") == "success":
+                    st = self.manager.get_status()
+                    db_utils.log_snapshot(st)
+                    db_utils.log_operation(
+                        {"operation": "switch_pool", "amount_usd": 0.0, "reason": f"Cambio manuale pool a {t0}/{t1} ({fee})"},
+                        {"status": "success", "new_pair": f"{t0}/{t1}"}
+                    )
+                self._send_json(200, res)
+            except Exception as exc:
+                logger.error("Errore /api/switch-pool: %s", exc)
+                self._send_json(500, {"status": "error", "reason": str(exc)})
+            return
 
         if path == "/api/run":
             run_token = os.getenv("DASHBOARD_RUN_TOKEN", config.DASHBOARD_ADMIN_TOKEN)

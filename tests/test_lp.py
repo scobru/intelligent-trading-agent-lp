@@ -362,7 +362,64 @@ class TestDashboardAndAgentRobustness(unittest.TestCase):
             self.assertEqual(res["operation"], "hold")
 
 
+class TestPoolScannerAndMultiPair(unittest.TestCase):
+    def test_fee_tier_parsing(self):
+        import pool_scanner
+        self.assertEqual(pool_scanner.parse_fee_tier("0.05%"), 500)
+        self.assertEqual(pool_scanner.parse_fee_tier("0.3%"), 3000)
+        self.assertEqual(pool_scanner.parse_fee_tier("0.01%"), 100)
+        self.assertEqual(pool_scanner.parse_fee_tier("1%"), 10000)
+        self.assertEqual(pool_scanner.parse_fee_tier(None), 500)
+
+    def test_risk_classification(self):
+        import pool_scanner
+        self.assertEqual(pool_scanner.classify_risk("wstETH", "WETH"), "Basso")
+        self.assertEqual(pool_scanner.classify_risk("USDC", "EURC"), "Basso")
+        self.assertEqual(pool_scanner.classify_risk("cbBTC", "USDC"), "Medio")
+        self.assertEqual(pool_scanner.classify_risk("AERO", "USDC"), "Alto")
+
+    def test_pool_score(self):
+        import pool_scanner
+        dummy_pool = {
+            "apyBase": 25.0,
+            "apyMean30d": 20.0,
+            "tvlUsd": 500000.0,
+            "volumeUsd1d": 250000.0,
+        }
+        score = pool_scanner.calculate_pool_score(dummy_pool)
+        self.assertGreater(score, 0.0)
+
+    def test_config_token_helpers(self):
+        self.assertEqual(config.get_token_decimals("USDC"), 6)
+        self.assertEqual(config.get_token_decimals("WETH"), 18)
+        self.assertEqual(config.get_token_decimals("CBBTC"), 8)
+        self.assertEqual(config.get_token_address("USDC"), config.USDC)
+        self.assertEqual(config.get_token_address("UNKNOWN"), "UNKNOWN")
+
+    def test_switch_pool_in_manager(self):
+        temp_dir = tempfile.mkdtemp()
+        try:
+            cfg_file = os.path.join(temp_dir, "lp_pool_cfg.json")
+            with patch("config.POOL_CONFIG_PATH", cfg_file):
+                client_mock = MagicMock()
+                mgr = LpManager(client_mock)
+                res = mgr.switch_pool("CBBTC", "USDC", 500)
+                self.assertEqual(res["status"], "success")
+                self.assertEqual(res["pair"], "CBBTC/USDC")
+                self.assertEqual(mgr.token0_symbol, "CBBTC")
+                self.assertEqual(mgr.token1_symbol, "USDC")
+                self.assertEqual(mgr.token0_decimals, 8)
+                self.assertEqual(mgr.token1_decimals, 6)
+
+                # Invalid pool
+                res_err = mgr.switch_pool("USDC", "USDC")
+                self.assertEqual(res_err["status"], "error")
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+
 if __name__ == "__main__":
     unittest.main()
+
 
 

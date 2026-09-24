@@ -129,9 +129,12 @@ class PositionTracker:
         sqrt_a = lp_math.tick_to_sqrt_price_x96(tick_l)
         sqrt_b = lp_math.tick_to_sqrt_price_x96(tick_u)
 
+        dec0 = int(pos.get("decimals0") or config.get_token_decimals(pos.get("token0", "WETH"), 18))
+        dec1 = int(pos.get("decimals1") or config.get_token_decimals(pos.get("token1", "USDC"), 6))
+
         amt0_raw, amt1_raw = lp_math.get_amounts_for_liquidity(sqrt_curr, sqrt_a, sqrt_b, liquidity)
-        amt0 = amt0_raw / 1e18  # WETH
-        amt1 = amt1_raw / 1e6   # USDC
+        amt0 = amt0_raw / (10 ** dec0)
+        amt1 = amt1_raw / (10 ** dec1)
 
         curr_lp_value = (amt0 * current_price) + amt1
 

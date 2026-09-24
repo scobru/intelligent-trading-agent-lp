@@ -223,6 +223,9 @@ account_status_old.json
 data/
 paper_portfolio.json
 paper_positions.json
+lp_position.json
+paper_lp.json
+lp_pool_config.json
 
 # Pix Agent
 .pi/

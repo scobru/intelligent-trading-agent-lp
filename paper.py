@@ -114,50 +114,71 @@ class PaperLpBook:
         self.save()
 
     def mint_position(self, current_price: float, range_width_pct: float,
-                      target_capital_usd: float = None) -> Dict[str, Any]:
+                      target_capital_usd: float = None,
+                      token0_sym: str = None, token1_sym: str = None,
+                      fee_tier: int = None) -> Dict[str, Any]:
         """
         Apre una nuova posizione LP simulata centrata sul prezzo corrente.
-        Usa i saldi USDC e WETH disponibili.
+        Usa i saldi disponibili.
         """
-        fee = config.POOL_FEE
-        tick_l, tick_u, p_lower, p_upper = lp_math.calculate_range_ticks(current_price, range_width_pct, fee)
+        active_cfg = config.get_active_pool_config()
+        t0 = (token0_sym or active_cfg.get("token0") or config.POOL_TOKEN0_SYMBOL).upper()
+        t1 = (token1_sym or active_cfg.get("token1") or config.POOL_TOKEN1_SYMBOL).upper()
+        fee = int(fee_tier or active_cfg.get("fee") or config.POOL_FEE)
+        dec0 = config.get_token_decimals(t0, 18)
+        dec1 = config.get_token_decimals(t1, 6)
 
-        # Se non specificato, alloca l'80% del saldo USDC convertito in 50% WETH e 50% USDC
+        tick_l, tick_u, p_lower, p_upper = lp_math.calculate_range_ticks(
+            current_price, range_width_pct, fee, decimals0=dec0, decimals1=dec1
+        )
+
         usdc_avail = float(self.balances.get("USDC", 0.0))
         weth_avail = float(self.balances.get("WETH", 0.0))
+        t0_avail = float(self.balances.get(t0, 0.0))
 
-        tot_usd = usdc_avail + (weth_avail * current_price)
+        tot_usd = usdc_avail + (weth_avail * (current_price if t0 == "WETH" or t1 == "WETH" else 2500.0))
+        if t1 == "USDC":
+            tot_usd = max(tot_usd, usdc_avail + (t0_avail * current_price))
         cap_usd = min(tot_usd * 0.85, target_capital_usd or tot_usd * 0.85)
 
         if cap_usd < 20.0:
             return {"status": "rejected", "reason": f"Capitale insufficiente (${cap_usd:.2f})"}
 
-        # Calcola le quote ideali a prezzo corrente
         half_cap = cap_usd / 2.0
-        needed_weth = half_cap / current_price
-        needed_usdc = half_cap
+        needed_amt0 = (half_cap / current_price) if current_price > 0 else 0.0
+        needed_amt1 = half_cap
 
-        # Aggiusta saldi (simulando swap iniziale per avere rapporto 50/50)
-        self.balances["USDC"] = max(0.0, usdc_avail - needed_usdc)
-        self.balances["WETH"] = max(0.0, weth_avail - needed_weth)
+        # Aggiusta saldi
+        if t1 in self.balances and self.balances[t1] >= needed_amt1:
+            self.balances[t1] = max(0.0, self.balances[t1] - needed_amt1)
+        else:
+            self.balances["USDC"] = max(0.0, self.balances.get("USDC", 0.0) - needed_amt1)
+
+        if t0 in self.balances and self.balances[t0] >= needed_amt0:
+            self.balances[t0] = max(0.0, self.balances[t0] - needed_amt0)
+        else:
+            self.balances["USDC"] = max(0.0, self.balances.get("USDC", 0.0) - half_cap)
+
         gas = config.PAPER_GAS_USD * 2.0
         self.state["gas_spent_usd"] = float(self.state.get("gas_spent_usd", 0.0)) + gas
 
         # Calcolo liquidità L
-        sqrt_curr = lp_math.human_price_to_sqrt_price_x96(current_price)
+        sqrt_curr = lp_math.human_price_to_sqrt_price_x96(current_price, decimals0=dec0, decimals1=dec1)
         sqrt_a = lp_math.tick_to_sqrt_price_x96(tick_l)
         sqrt_b = lp_math.tick_to_sqrt_price_x96(tick_u)
 
-        raw0 = int(needed_weth * 1e18)
-        raw1 = int(needed_usdc * 1e6)
+        raw0 = int(needed_amt0 * (10 ** dec0))
+        raw1 = int(needed_amt1 * (10 ** dec1))
         liq = lp_math.get_liquidity_for_amounts(sqrt_curr, sqrt_a, sqrt_b, raw0, raw1)
 
         pos_id = int(time.time() * 1000) % 1_000_000
 
         pos = {
             "token_id": pos_id,
-            "token0": config.POOL_TOKEN0_SYMBOL,
-            "token1": config.POOL_TOKEN1_SYMBOL,
+            "token0": t0,
+            "token1": t1,
+            "decimals0": dec0,
+            "decimals1": dec1,
             "fee": fee,
             "tick_lower": tick_l,
             "tick_upper": tick_u,
@@ -166,8 +187,8 @@ class PaperLpBook:
             "liquidity": liq,
             "entry_price": current_price,
             "entry_time": time.time(),
-            "entry_amount0": needed_weth,
-            "entry_amount1": needed_usdc,
+            "entry_amount0": needed_amt0,
+            "entry_amount1": needed_amt1,
             "entry_value_usd": cap_usd,
             "uncollected_fees_usd": 0.0,
             "fees_collected_usd": 0.0,
@@ -194,24 +215,29 @@ class PaperLpBook:
         fees_collected = float(pos.get("fees_collected_usd", 0.0)) + fees_usd
 
         # 2. Calcola i token restituiti dalla chiusura
+        t0 = pos.get("token0", "WETH")
+        t1 = pos.get("token1", "USDC")
+        dec0 = int(pos.get("decimals0") or config.get_token_decimals(t0, 18))
+        dec1 = int(pos.get("decimals1") or config.get_token_decimals(t1, 6))
+
         tick_l = int(pos["tick_lower"])
         tick_u = int(pos["tick_upper"])
         liq = int(pos.get("liquidity", 0))
 
-        sqrt_curr = lp_math.human_price_to_sqrt_price_x96(current_price)
+        sqrt_curr = lp_math.human_price_to_sqrt_price_x96(current_price, decimals0=dec0, decimals1=dec1)
         sqrt_a = lp_math.tick_to_sqrt_price_x96(tick_l)
         sqrt_b = lp_math.tick_to_sqrt_price_x96(tick_u)
 
         raw0, raw1 = lp_math.get_amounts_for_liquidity(sqrt_curr, sqrt_a, sqrt_b, liq)
-        ret_weth = raw0 / 1e18
-        ret_usdc = raw1 / 1e6
+        ret0 = raw0 / (10 ** dec0)
+        ret1 = raw1 / (10 ** dec1)
 
         # Aggiungi le fee riscosse
-        ret_usdc += fees_usd
+        ret1 += fees_usd
 
         # Riaccredita sul saldo virtuale
-        self.balances["WETH"] = float(self.balances.get("WETH", 0.0)) + ret_weth
-        self.balances["USDC"] = float(self.balances.get("USDC", 0.0)) + ret_usdc
+        self.balances[t0] = float(self.balances.get(t0, 0.0)) + ret0
+        self.balances[t1] = float(self.balances.get(t1, 0.0)) + ret1
 
         # Costo gas per decrease + collect + swap + mint
         gas = config.PAPER_GAS_USD * 4.0
@@ -220,8 +246,8 @@ class PaperLpBook:
         # Archivia vecchia posizione
         pos["closed_at"] = time.time()
         pos["close_price"] = current_price
-        pos["returned_weth"] = ret_weth
-        pos["returned_usdc"] = ret_usdc
+        pos["returned_token0"] = ret0
+        pos["returned_token1"] = ret1
         pos["fees_collected_usd"] = fees_collected
         pos["uncollected_fees_usd"] = 0.0
         self.state.setdefault("history", []).append(pos)
@@ -229,7 +255,7 @@ class PaperLpBook:
         self.save()
 
         # 3. Apre la nuova posizione centrata
-        new_mint = self.mint_position(current_price, new_range_width_pct)
+        new_mint = self.mint_position(current_price, new_range_width_pct, token0_sym=t0, token1_sym=t1, fee_tier=pos.get("fee"))
         return {
             "status": "success",
             "operation": "recenter",
@@ -276,14 +302,19 @@ class PaperLpBook:
         fees_uncoll = 0.0
         pos = self.active_position
         if pos:
+            t0 = pos.get("token0", "WETH")
+            t1 = pos.get("token1", "USDC")
+            dec0 = int(pos.get("decimals0") or config.get_token_decimals(t0, 18))
+            dec1 = int(pos.get("decimals1") or config.get_token_decimals(t1, 6))
+
             tick_l = int(pos["tick_lower"])
             tick_u = int(pos["tick_upper"])
             liq = int(pos.get("liquidity", 0))
-            sqrt_curr = lp_math.human_price_to_sqrt_price_x96(current_price)
+            sqrt_curr = lp_math.human_price_to_sqrt_price_x96(current_price, decimals0=dec0, decimals1=dec1)
             sqrt_a = lp_math.tick_to_sqrt_price_x96(tick_l)
             sqrt_b = lp_math.tick_to_sqrt_price_x96(tick_u)
             raw0, raw1 = lp_math.get_amounts_for_liquidity(sqrt_curr, sqrt_a, sqrt_b, liq)
-            pos_val = ((raw0 / 1e18) * current_price) + (raw1 / 1e6)
+            pos_val = ((raw0 / (10 ** dec0)) * current_price) + (raw1 / (10 ** dec1))
             fees_uncoll = float(pos.get("uncollected_fees_usd", 0.0))
 
         total_equity = wallet_usd + pos_val + fees_uncoll
