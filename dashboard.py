@@ -811,7 +811,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
 
-        if path not in ("/api/switch-pool", "/api/run", "/api/pause", "/api/resume"):
+        if path not in ("/api/switch-pool", "/api/run", "/api/pause", "/api/resume", "/api/release_funds"):
             self.send_error(404)
             return
 
@@ -887,6 +887,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
             threading.Thread(target=_trigger, daemon=True).start()
             self._send_json(200, {"status": "triggered", "message": "Ciclo LP avviato in background."})
+            return
+
+        if path == "/api/release_funds":
+            self._send_json(200, {"status": "success", "message": "Svincolo USDC non implementato per questo agente", "released_usd": 0.0})
             return
 
         self.send_error(404)
