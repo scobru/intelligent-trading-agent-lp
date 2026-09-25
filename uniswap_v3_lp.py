@@ -472,7 +472,15 @@ class UniswapV3Lp:
         )
 
         fn = self.pm_contract.functions.mint(params)
-        return self.client.build_and_send(fn, value=0)
+        tx = fn.build_transaction({
+            "from": self.client.address,
+            "value": 0,
+            "nonce": self.client.w3.eth.get_transaction_count(self.client.address),
+            "chainId": config.CHAIN_ID,
+        })
+        tx.pop("maxFeePerGas", None)
+        tx.pop("maxPriorityFeePerGas", None)
+        return self.client.send_transaction(tx, description="mint Uniswap V3 position")
 
     def decrease_liquidity(self, token_id: int, liquidity: int, slippage_bps: int = None) -> str:
         """Riduce/rimuove la liquidita' da una posizione NFT."""
@@ -485,7 +493,15 @@ class UniswapV3Lp:
             deadline,
         )
         fn = self.pm_contract.functions.decreaseLiquidity(params)
-        return self.client.build_and_send(fn, value=0)
+        tx = fn.build_transaction({
+            "from": self.client.address,
+            "value": 0,
+            "nonce": self.client.w3.eth.get_transaction_count(self.client.address),
+            "chainId": config.CHAIN_ID,
+        })
+        tx.pop("maxFeePerGas", None)
+        tx.pop("maxPriorityFeePerGas", None)
+        return self.client.send_transaction(tx, description="decrease liquidity Uniswap V3")
 
     def collect_fees(self, token_id: int, recipient: str = None) -> str:
         """Raccoglie le fee maturate (e l'ammontare ritirato con decreaseLiquidity)."""
@@ -499,4 +515,12 @@ class UniswapV3Lp:
             max_uint128,
         )
         fn = self.pm_contract.functions.collect(params)
-        return self.client.build_and_send(fn, value=0)
+        tx = fn.build_transaction({
+            "from": self.client.address,
+            "value": 0,
+            "nonce": self.client.w3.eth.get_transaction_count(self.client.address),
+            "chainId": config.CHAIN_ID,
+        })
+        tx.pop("maxFeePerGas", None)
+        tx.pop("maxPriorityFeePerGas", None)
+        return self.client.send_transaction(tx, description="collect Uniswap V3 fees")
