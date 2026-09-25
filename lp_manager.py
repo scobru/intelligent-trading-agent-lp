@@ -427,3 +427,63 @@ class LpManager:
         tx_col = self.v3_lp.collect_fees(tid)
         self.tracker.record_fee_collected(action.get("amount_usd", 0.0))
         return {"status": "success", "operation": "collect_fees", "tx": tx_col}
+
+    def release_funds(self, target_usdc: float = 0.0) -> Dict[str, Any]:
+        """
+        Rimuove la liquidità dalla posizione Uniswap V3 LP e swappa eventuale WETH in USDC.
+        """
+        pos = self.tracker.active_position
+        price = 0.0
+        try:
+            price = self.v3_lp.get_pool_price()
+        except Exception:
+            pass
+
+        if self.paper:
+            if pos:
+                res = self.paper.close_position(price or 2700.0)
+                self.tracker.record_close(pos, price or 2700.0, fees_usd=0.0)
+            usdc = self.paper.usdc
+            return {
+                "status": "success",
+                "message": f"Posizione LP virtuale chiusa. Saldo USDC: ${usdc:.2f}",
+                "usdc_balance": round(usdc, 2),
+                "released_usd": round(usdc, 2)
+            }
+
+        tid = (pos or {}).get("token_id")
+        if not tid:
+            usdc = self.client.balance_of_float(config.USDC)
+            return {
+                "status": "success",
+                "message": "Nessuna posizione LP attiva",
+                "usdc_balance": round(usdc, 2),
+                "released_usd": 0.0
+            }
+
+        # Live decrease liquidity & collect
+        try:
+            pos_details = self.v3_lp.get_position_details(tid)
+            liq = pos_details["liquidity"]
+            if liq > 0:
+                self.v3_lp.decrease_liquidity(tid, liq)
+            self.v3_lp.collect_fees(tid)
+            self.tracker.record_close(pos, price, fees_usd=0.0)
+        except Exception as exc:
+            logger.error("Errore rimozione liquidita LP: %s", exc)
+
+        # Swappa eventuale WETH rimasto in USDC
+        weth_bal = self.client.balance_of_float(config.WETH)
+        if weth_bal > 0.001:
+            try:
+                self.uniswap.swap_weth_to_usdc(weth_bal)
+            except Exception as exc:
+                logger.warning("Errore swap WETH->USDC dopo chiusura LP: %s", exc)
+
+        usdc = self.client.balance_of_float(config.USDC)
+        return {
+            "status": "success",
+            "message": f"Posizione LP chiusa e fondi convertiti in USDC. Saldo attuale: ${usdc:.2f}",
+            "usdc_balance": round(usdc, 2),
+            "released_usd": round(usdc, 2)
+        }
