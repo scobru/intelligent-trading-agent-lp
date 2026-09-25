@@ -758,6 +758,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     "meta": meta,
                     "run_enabled": True,
                 }
+                payload["is_paused"] = db_utils.is_bot_paused()
+                payload["pause_info"] = db_utils.get_pause_info()
                 self._send_json(200, payload)
             except Exception as exc:
                 logger.error("Errore /api/data: %s", exc)
@@ -767,6 +769,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if path == "/api/status":
             try:
                 st = self.manager.get_status() if self.manager else {}
+                st["is_paused"] = db_utils.is_bot_paused()
+                st["pause_info"] = db_utils.get_pause_info()
                 self._send_json(200, st)
             except Exception as exc:
                 self._send_json(500, {"error": str(exc)})
@@ -790,9 +794,49 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         self.send_error(404)
 
+    def _is_auth_valid(self) -> bool:
+        run_token = os.getenv("DASHBOARD_RUN_TOKEN", config.DASHBOARD_ADMIN_TOKEN)
+        if not run_token:
+            return False
+        provided = self.headers.get("X-Run-Token", "") or self.headers.get("X-Admin-Token", "")
+        if not provided and "Authorization" in self.headers:
+            auth = self.headers.get("Authorization", "")
+            if auth.startswith("Bearer "):
+                provided = auth[7:].strip()
+            else:
+                provided = auth.strip()
+        return bool(provided and hmac.compare_digest(provided, run_token))
+
     def do_POST(self):
         parsed = urlparse(self.path)
         path = parsed.path
+
+        if path not in ("/api/switch-pool", "/api/run", "/api/pause", "/api/resume"):
+            self.send_error(404)
+            return
+
+        if path in ("/api/run", "/api/pause", "/api/resume"):
+            if not self._is_auth_valid():
+                self._send_json(403, {"error": "Token non valido o mancante", "message": "Token non valido o mancante"})
+                return
+
+        if path == "/api/pause":
+            reason = "Pausa richiesta da API"
+            try:
+                clen = int(self.headers.get("Content-Length", 0))
+                if clen > 0:
+                    body = json.loads(self.rfile.read(clen).decode("utf-8"))
+                    reason = body.get("reason", reason)
+            except Exception:
+                pass
+            db_utils.set_bot_paused(True, reason=reason)
+            self._send_json(200, {"status": "success", "is_paused": True, "message": f"Bot in pausa: {reason}"})
+            return
+
+        if path == "/api/resume":
+            db_utils.set_bot_paused(False)
+            self._send_json(200, {"status": "success", "is_paused": False, "message": "Bot riattivato con successo."})
+            return
 
         if path == "/api/switch-pool":
             try:
@@ -826,16 +870,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/run":
-            run_token = os.getenv("DASHBOARD_RUN_TOKEN", config.DASHBOARD_ADMIN_TOKEN)
-            if run_token:
-                provided = self.headers.get("X-Run-Token", "") or self.headers.get("X-Admin-Token", "")
-                if not provided and "Authorization" in self.headers:
-                    auth = self.headers.get("Authorization", "")
-                    if auth.startswith("Bearer "):
-                        provided = auth[7:].strip()
-                if not hmac.compare_digest(provided, run_token):
-                    self._send_json(403, {"error": "Token non valido o mancante", "message": "Token non valido o mancante"})
-                    return
+            if db_utils.is_bot_paused():
+                pinfo = db_utils.get_pause_info()
+                self._send_json(200, {
+                    "status": "paused",
+                    "is_paused": True,
+                    "message": f"Bot LP attualmente in PAUSA ({pinfo.get('reason', 'Pausa attiva')}). Ciclo ignorato."
+                })
+                return
 
             def _trigger():
                 try:

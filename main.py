@@ -35,6 +35,11 @@ logger = logging.getLogger("main")
 
 
 def run_cycle(manager: LpManager, agent: LpAgent, notifier: TelegramNotifier) -> None:
+    if db_utils.is_bot_paused():
+        pinfo = db_utils.get_pause_info()
+        logger.info("⏸️ Bot LP in stato di PAUSA (%s). Ciclo ignorato.", pinfo.get("reason", "Pausa attiva"))
+        return
+
     logger.info("--- Inizio ciclo LP (Modalità: %s) ---", "PAPER" if config.PAPER_TRADING else ("DRY_RUN" if config.DRY_RUN else "LIVE"))
 
     # 1. Auto-refuel USDC se necessario
