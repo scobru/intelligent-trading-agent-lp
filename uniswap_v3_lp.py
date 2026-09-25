@@ -454,8 +454,8 @@ class UniswapV3Lp:
         deadline = int(time.time()) + 300
 
         # Assicura approvazione ERC20 al PositionManager
-        self.client.approve_if_needed(token0, self.pm_address, amount0_desired)
-        self.client.approve_if_needed(token1, self.pm_address, amount1_desired)
+        self.client.ensure_allowance(token0, self.pm_address, amount0_desired)
+        self.client.ensure_allowance(token1, self.pm_address, amount1_desired)
 
         params = (
             self.w3.to_checksum_address(token0),
