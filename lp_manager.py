@@ -165,8 +165,24 @@ class LpManager:
             mode = "paper"
             balances = dict(self.paper.balances)
         else:
-            pos_eval = self.tracker.evaluate(price, tick, prices)
             mode = "dry_run" if config.DRY_RUN else "live"
+            # In modalità LIVE, verifica che la posizione salvata nel tracker appartenga realmente on-chain al wallet
+            if mode == "live" and self.client and self.client.address:
+                try:
+                    onchain_tids = self.v3_lp.get_user_positions(self.client.address)
+                    active_pos = self.tracker.active_position
+                    if active_pos:
+                        tid = active_pos.get("token_id")
+                        if not onchain_tids or tid not in onchain_tids:
+                            logger.warning(
+                                "Posizione tracker locale (token_id: %s) non esiste on-chain per il wallet %s. Reset residuo paper/dry-run.",
+                                tid, self.client.address
+                            )
+                            self.tracker.set_active_position(None)
+                except Exception as exc:
+                    logger.debug("Verifica on-chain NFT posizioni fallita: %s", exc)
+
+            pos_eval = self.tracker.evaluate(price, tick, prices)
             t0_addr = config.get_token_address(self.token0_symbol)
             t1_addr = config.get_token_address(self.token1_symbol)
             balances = {
@@ -182,9 +198,17 @@ class LpManager:
         uncoll_fees = float(pos_eval.get("fees_collected_usd", 0.0))
         needs_collect = config.AUTO_COLLECT_FEES and (uncoll_fees >= config.MIN_FEE_COLLECT_USD)
 
+        # Calcolo Equity Complessiva (wallet + LP attiva reale)
+        pos_val = float(pos_eval.get("current_lp_value_usd", 0.0) if pos_eval.get("has_position") else 0.0)
+        u_bal = float(balances.get("USDC", 0.0) or 0.0)
+        w_bal = float(balances.get("WETH", 0.0) or 0.0) * price
+        total_eq = float(paper_summary.get("total_equity_usd", 0.0)) if paper_summary else (u_bal + w_bal + pos_val)
+
         status = {
             "mode": mode,
             "wallet": self.client.address if self.client else "",
+            "total_equity_usd": round(total_eq, 2),
+            "total_value_usd": round(total_eq, 2),
             "pool": {
                 "address": self.get_pool_address(),
                 "pair": f"{self.token0_symbol}/{self.token1_symbol}",

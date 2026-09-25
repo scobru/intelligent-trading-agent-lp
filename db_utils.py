@@ -70,7 +70,7 @@ def log_snapshot(status: Dict[str, Any]):
         now = time.time()
         pos = status.get("position") or {}
         paper = status.get("paper") or {}
-        tot_eq = paper.get("total_equity_usd", status.get("total_equity_usd", 0.0))
+        tot_eq = paper.get("total_equity_usd", status.get("total_equity_usd", status.get("total_value_usd", 0.0)))
 
         with _connect() as conn:
             conn.execute("""
