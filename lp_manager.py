@@ -239,6 +239,19 @@ class LpManager:
         pos = status.get("position", {})
 
         if status.get("needs_mint"):
+            bals = status.get("balances", {})
+            u_bal = float(bals.get("USDC", 0.0) or 0.0)
+            w_bal = float(bals.get("WETH", 0.0) or 0.0) * price
+            total_liquid = u_bal + w_bal
+            min_cap = getattr(config, "MIN_LP_CAPITAL_USD", 5.0)
+
+            if not self.paper and total_liquid < min_cap:
+                return {
+                    "operation": "hold",
+                    "price": price,
+                    "reason": f"Nessuna posizione LP attiva ma capitale insufficiente (${total_liquid:.2f} < ${min_cap:.2f}). In attesa di fondi.",
+                }
+
             return {
                 "operation": "mint",
                 "price": price,
@@ -336,31 +349,70 @@ class LpManager:
         # Live mint on-chain
         token0 = config.get_token_address(self.token0_symbol)
         token1 = config.get_token_address(self.token1_symbol)
+        
+        t1_bal = self.client.balance_of_float(token1)
+        t0_bal = self.client.balance_of_float(token0)
+        total_liquid = t1_bal + (t0_bal * price)
+        min_cap = getattr(config, "MIN_LP_CAPITAL_USD", 5.0)
+
+        if total_liquid < min_cap:
+            logger.warning("Fondi insufficienti per mint LP on-chain: $%.2f USDC, %.4f WETH (totale: $%.2f < $%.2f)",
+                           t1_bal, t0_bal, total_liquid, min_cap)
+            return {
+                "status": "skipped",
+                "operation": "mint",
+                "reason": f"Fondi insufficienti (${total_liquid:.2f} < ${min_cap:.2f})"
+            }
+
         tick_l, tick_u, p_l, p_u = lp_math.calculate_range_ticks(
             price, w, self.fee_tier,
             decimals0=self.token0_decimals, decimals1=self.token1_decimals
         )
 
-        # Calcola ammontari desiderati
-        t1_bal = self.client.balance_of_float(token1)
-        amt1_desired = int(min(t1_bal * 0.8, 1000.0) * (10 ** self.token1_decimals))
-        amt0_desired = int(((amt1_desired / (10 ** self.token1_decimals)) / price) * (10 ** self.token0_decimals))
+        try:
+            # Se abbiamo solo USDC e 0 WETH, swappa circa meta' in WETH
+            if (t0_bal * price) < 1.0 and t1_bal >= min_cap:
+                swap_usd = t1_bal * 0.48
+                raw_in = int(swap_usd * (10 ** self.token1_decimals))
+                route = self.uniswap.best_route(token1, token0, raw_in)
+                if route and route.amount_out > 0:
+                    logger.info("Swappo $%.2f USDC -> WETH per comporre la coppia LP...", swap_usd)
+                    self.uniswap.swap(route, slippage_bps=config.DEFAULT_SLIPPAGE_BPS)
+                    time.sleep(2)
+                    t1_bal = self.client.balance_of_float(token1)
+                    t0_bal = self.client.balance_of_float(token0)
 
-        tx_hash = self.v3_lp.mint_position(
-            token0=token0,
-            token1=token1,
-            fee=self.fee_tier,
-            tick_lower=tick_l,
-            tick_upper=tick_u,
-            amount0_desired=amt0_desired,
-            amount1_desired=amt1_desired,
-        )
-        return {
-            "status": "success",
-            "operation": "mint",
-            "tx_hash": tx_hash,
-            "range": [p_l, p_u],
-        }
+            use_t1 = min(t1_bal * 0.95, 1000.0)
+            use_t0 = min(t0_bal * 0.95, 1000.0 / price if price > 0 else 0.0)
+
+            amt1_desired = int(use_t1 * (10 ** self.token1_decimals))
+            amt0_desired = int(use_t0 * (10 ** self.token0_decimals))
+
+            if amt0_desired <= 0 and amt1_desired <= 0:
+                return {"status": "skipped", "operation": "mint", "reason": "Ammontari LP calcolati pari a 0"}
+
+            tx_hash = self.v3_lp.mint_position(
+                token0=token0,
+                token1=token1,
+                fee=self.fee_tier,
+                tick_lower=tick_l,
+                tick_upper=tick_u,
+                amount0_desired=amt0_desired,
+                amount1_desired=amt1_desired,
+            )
+            return {
+                "status": "success",
+                "operation": "mint",
+                "tx_hash": tx_hash,
+                "range": [p_l, p_u],
+            }
+        except Exception as exc:
+            logger.error("Errore durante mint LP on-chain: %s", exc)
+            return {
+                "status": "error",
+                "operation": "mint",
+                "message": str(exc),
+            }
 
     def _execute_recenter(self, action: Dict[str, Any], status: Dict[str, Any]) -> Dict[str, Any]:
         price = status["current_price"]

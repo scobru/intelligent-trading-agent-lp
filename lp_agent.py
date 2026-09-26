@@ -49,6 +49,9 @@ class LpAgent:
                 # Mappa e armonizza
                 action_name = str(llm_decision["action"]).lower()
                 if action_name in ("hold", "mint", "recenter", "collect_fees"):
+                    # Se non ci sono fondi per mintare, mantieni hold
+                    if action_name == "mint" and deterministic_plan.get("operation") == "hold":
+                        action_name = "hold"
                     res = dict(deterministic_plan)
                     res["operation"] = action_name
                     if "range_width_pct" in llm_decision:
