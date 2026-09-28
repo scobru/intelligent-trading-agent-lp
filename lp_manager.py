@@ -9,6 +9,7 @@ Esegue:
 """
 
 import logging
+import threading
 import time
 from typing import Any, Dict, Optional, Tuple
 
@@ -42,6 +43,9 @@ class LpManager:
         self._cached_price: Optional[float] = None
         self.last_tick: int = 0
         self._last_price_time: float = 0.0
+        self._status_cache: Optional[Dict[str, Any]] = None
+        self._status_cache_time: float = 0.0
+        self._status_lock = threading.Lock()
 
     # ------------------------------------------------------------ pool & prezzo
     def get_pool_address(self) -> str:
@@ -119,6 +123,7 @@ class LpManager:
         self._pool_address = None
         self._cached_price = None
         self._last_price_time = 0.0
+        self._status_cache = None
 
         # Se in paper mode e c'era una posizione aperta su altra coppia, chiudila
         if self.paper and self.paper.active_position:
@@ -145,7 +150,28 @@ class LpManager:
         }
 
     # ------------------------------------------------------------ stato complessivo
-    def get_status(self) -> Dict[str, Any]:
+    def get_status(self, max_age: float = 0.0) -> Dict[str, Any]:
+        """
+        Stato complessivo. Con max_age > 0 riusa il risultato recente (dashboard,
+        Telegram) e, se l'RPC fallisce, serve l'ultimo stato noto invece di errore.
+        """
+        with self._status_lock:
+            now = time.time()
+            cached = self._status_cache
+            if cached is not None and max_age > 0 and now - self._status_cache_time < max_age:
+                return cached
+            try:
+                status = self._compute_status()
+            except Exception as exc:
+                if cached is not None and max_age > 0:
+                    logger.warning("Stato non aggiornabile (%s): uso l'ultimo stato in cache", exc)
+                    return cached
+                raise
+            self._status_cache = status
+            self._status_cache_time = time.time()
+            return status
+
+    def _compute_status(self) -> Dict[str, Any]:
         price, tick = self.get_current_price_and_tick()
         prices = {
             self.token1_symbol: 1.0,

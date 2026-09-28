@@ -747,7 +747,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         if path == "/api/data":
             try:
-                st = self.manager.get_status() if self.manager else {}
+                st = dict(self.manager.get_status(max_age=config.STATUS_CACHE_TTL_SECONDS)) if self.manager else {}
                 db_data = db_utils.fetch_dashboard_data()
                 meta = build_meta({"status": st, "snapshot_at": db_data.get("snapshot_at")})
                 pools_data = pool_scanner.scanner.scan()
@@ -770,7 +770,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         if path == "/api/status":
             try:
-                st = self.manager.get_status() if self.manager else {}
+                st = dict(self.manager.get_status(max_age=config.STATUS_CACHE_TTL_SECONDS)) if self.manager else {}
                 st["is_paused"] = db_utils.is_bot_paused()
                 st["pause_info"] = db_utils.get_pause_info()
                 self._send_json(200, st)

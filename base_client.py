@@ -9,8 +9,11 @@ import logging
 import time
 from typing import Any, Dict, List, Optional
 
+import requests
 from eth_account import Account
 from web3 import Web3
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from web3.middleware import ExtraDataToPOAMiddleware
 
 import config
@@ -62,10 +65,29 @@ class BaseChainError(RuntimeError):
     """Errore non recuperabile nell'interazione con la chain."""
 
 
+def _retrying_session() -> requests.Session:
+    """Sessione HTTP che ritenta su 429/5xx con backoff (le POST JSON-RPC sono idempotenti in lettura)."""
+    retry = Retry(
+        total=config.RPC_MAX_RETRIES,
+        backoff_factor=config.RPC_BACKOFF_SECONDS,
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=None,
+        respect_retry_after_header=True,
+        raise_on_status=False,
+    )
+    session = requests.Session()
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
+
 class BaseClient:
     def __init__(self, rpc_url: str = None, private_key: str = None, address: str = None):
         self.rpc_url = rpc_url or config.BASE_RPC_URL
-        self.w3 = Web3(Web3.HTTPProvider(self.rpc_url, request_kwargs={"timeout": config.HTTP_TIMEOUT}))
+        self.w3 = Web3(Web3.HTTPProvider(
+            self.rpc_url, request_kwargs={"timeout": config.HTTP_TIMEOUT}, session=_retrying_session()
+        ))
         # Base e' una L2 OP-stack: gli header hanno extraData fuori standard
         self.w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
 

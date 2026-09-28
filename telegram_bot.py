@@ -115,7 +115,7 @@ class TelegramNotifier:
                 "/help - Questa guida"
             )
         elif base_cmd == "/status":
-            st = self.manager.get_status()
+            st = self.manager.get_status(max_age=config.STATUS_CACHE_TTL_SECONDS)
             pos = st.get("position", {})
             pool_info = st.get("pool", {})
             t0 = pool_info.get("token0", "WETH")
@@ -130,7 +130,7 @@ class TelegramNotifier:
                 f"Re-centers: `{st.get('total_recenters', 0)}`"
             )
         elif base_cmd == "/position":
-            st = self.manager.get_status()
+            st = self.manager.get_status(max_age=config.STATUS_CACHE_TTL_SECONDS)
             pos = st.get("position", {})
             if not pos.get("has_position"):
                 self.send_message("Nessuna posizione LP attiva.")
@@ -184,12 +184,12 @@ class TelegramNotifier:
             else:
                 self.send_message(f"❌ Errore cambio pool: {res.get('reason')}")
         elif base_cmd == "/recenter":
-            st = self.manager.get_status()
+            st = self.manager.get_status(max_age=config.STATUS_CACHE_TTL_SECONDS)
             act = {"operation": "recenter", "reason": "Re-center manuale richiesto da Telegram"}
             res = self.manager.execute_action(act, st)
             self.notify_recenter(res)
         elif base_cmd == "/collect":
-            st = self.manager.get_status()
+            st = self.manager.get_status(max_age=config.STATUS_CACHE_TTL_SECONDS)
             act = {"operation": "collect_fees", "reason": "Raccolta manuale da Telegram"}
             res = self.manager.execute_action(act, st)
             self.send_message(f"💰 Risultato Collect: `{res.get('status')}` - Importo: `${res.get('amount_usd', 0):.2f}`")
