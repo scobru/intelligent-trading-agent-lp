@@ -6,7 +6,6 @@ con gli altri agenti della suite (DCA, Yield, Neutral, Degen).
 """
 
 import datetime
-import hmac
 import json
 import logging
 import os
@@ -23,6 +22,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import config
+import dashboard_auth
 import db_utils
 import pool_scanner
 from base_client import BaseClient
@@ -797,16 +797,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_error(404)
 
     def _is_auth_valid(self) -> bool:
-        if not RUN_TOKEN:
-            return False
-        provided = self.headers.get("X-Run-Token", "") or self.headers.get("X-Admin-Token", "")
-        if not provided and "Authorization" in self.headers:
-            auth = self.headers.get("Authorization", "")
-            if auth.startswith("Bearer "):
-                provided = auth[7:].strip()
-            else:
-                provided = auth.strip()
-        return bool(provided and hmac.compare_digest(provided, RUN_TOKEN))
+        return dashboard_auth.is_run_token_valid(self.headers, RUN_TOKEN)
 
     def do_POST(self):
         parsed = urlparse(self.path)
