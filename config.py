@@ -85,6 +85,9 @@ TICK_SPACINGS = {
     10000: 200,  # 1.00%
 }
 
+# Fee tier provate dal quoter (bps)
+FEE_TIERS = sorted(TICK_SPACINGS)
+
 # ---------------------------------------------------------------- configurazione Pool LP
 POOL_TOKEN0_SYMBOL = os.getenv("POOL_TOKEN0", "WETH").upper()
 POOL_TOKEN1_SYMBOL = os.getenv("POOL_TOKEN1", "USDC").upper()
@@ -138,6 +141,11 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 # ---------------------------------------------------------------- HTTP / transazioni
+# Retry su 429/5xx dell'RPC (backoff esponenziale, rispetta Retry-After)
+RPC_MAX_RETRIES = int(os.getenv("RPC_MAX_RETRIES", 5))
+RPC_BACKOFF_SECONDS = float(os.getenv("RPC_BACKOFF_SECONDS", 1.0))
+# Cache dello stato per dashboard/Telegram, cosi' non colpiscono l'RPC a ogni richiesta
+STATUS_CACHE_TTL_SECONDS = float(os.getenv("STATUS_CACHE_TTL_SECONDS", 30))
 HTTP_TIMEOUT = int(os.getenv("HTTP_TIMEOUT", 30))  # timeout connessione RPC in secondi
 TX_TIMEOUT_SECONDS = int(os.getenv("TX_TIMEOUT_SECONDS", 300))
 TX_DEADLINE_SECONDS = int(os.getenv("TX_DEADLINE_SECONDS", 600))
