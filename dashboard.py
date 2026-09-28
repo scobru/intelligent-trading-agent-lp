@@ -30,6 +30,8 @@ from lp_manager import LpManager
 
 logger = logging.getLogger(__name__)
 
+RUN_TOKEN = os.getenv("DASHBOARD_RUN_TOKEN", "")
+
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 STATIC_ROUTES = {
     "/favicon.ico": ("favicon.ico", "image/x-icon"),
@@ -795,8 +797,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_error(404)
 
     def _is_auth_valid(self) -> bool:
-        run_token = os.getenv("DASHBOARD_RUN_TOKEN", config.DASHBOARD_ADMIN_TOKEN)
-        if not run_token:
+        if not RUN_TOKEN:
             return False
         provided = self.headers.get("X-Run-Token", "") or self.headers.get("X-Admin-Token", "")
         if not provided and "Authorization" in self.headers:
@@ -805,7 +806,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 provided = auth[7:].strip()
             else:
                 provided = auth.strip()
-        return bool(provided and hmac.compare_digest(provided, run_token))
+        return bool(provided and hmac.compare_digest(provided, RUN_TOKEN))
 
     def do_POST(self):
         parsed = urlparse(self.path)
@@ -815,10 +816,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_error(404)
             return
 
-        if path in ("/api/run", "/api/pause", "/api/resume"):
-            if not self._is_auth_valid():
-                self._send_json(403, {"error": "Token non valido o mancante", "message": "Token non valido o mancante"})
-                return
+        if not self._is_auth_valid():
+            self._send_json(403, {"error": "Token non valido o mancante", "message": "Token non valido o mancante"})
+            return
 
         if path == "/api/pause":
             reason = "Pausa richiesta da API"
