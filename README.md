@@ -1,127 +1,146 @@
 # Intelligent Trading Agent - Concentrated Liquidity LP (Base L2)
 
-> ⚠️ **Software sperimentale, non consulenza finanziaria.** Il bot opera con denaro reale su Base e può perdere in parte o del tutto il capitale che gli affidi. Parti in paper trading o dry-run; in live usa un wallet dedicato e solo importi che puoi permetterti di perdere. Dettagli nella sezione **Avvertenza** in fondo.
+**English** · [Italiano](README.it.md)
 
-Agente autonomo per la fornitura attiva di **Liquidità Concentrata** su **Uniswap V3** (e compatibile Aerodrome Slipstream) su rete **Base (Chain ID 8453)** con monitoraggio continuo dell'**Impermanent Loss (IL)**, raccolta automatica delle commissioni e **riposizionamento (re-centering) dinamico** del range.
+> ⚠️ **Experimental software, not financial advice.** The bot trades real money on Base and can lose some or all of the capital you give it. Start with paper trading or dry-run; when you go live, use a dedicated wallet and only amounts you can afford to lose. See the **Disclaimer** section at the bottom.
 
-Parte della suite di trading agent modulari per Base (`intelligent-trading-agent`, `intelligent-trading-agent-neutral`, `intelligent-trading-agent-degen`, `intelligent-trading-agent-yield`, `intelligent-trading-agent-dca`, `intelligent-trading-agent-lp`).
+An autonomous agent that actively provides **concentrated liquidity** on
+**Uniswap V3** (Aerodrome Slipstream compatible) on **Base (chain ID 8453)**,
+with continuous **impermanent loss (IL)** monitoring, automatic fee collection
+and **dynamic re-centering** of the range.
 
----
-
-## Caratteristiche Principali
-
-1. **Liquidità Concentrata su Uniswap V3**:
-   - Fornisce liquidità in un range ristretto e ottimizzato (es. $\pm 4\%$ attorno al prezzo corrente per WETH/USDC al pool 0.05%).
-   - Moltiplicatore di efficienza del capitale (concentration factor fino a $20\times - 30\times$) rispetto alla liquidità v2 tradizionale.
-   - Calcolo matematico esatto dei tick ($1.0001^{tick}$), conversioni da/a `sqrtPriceX96` e stima della liquidità $L$.
-
-2. **Riposizionamento Dinamico (Re-centering)**:
-   - Monitora se il prezzo esce dal range o entra nella fascia di buffer limite.
-   - Protezione anti-whipsaw: tempo minimo di permanenza (`MIN_HOLD_HOURS_BEFORE_RECENTER`) per evitare riposizionamenti continui su breakout volatili transitori.
-   - Procedura atomica:
-     1. Riscuote le commissioni accumulate (`collect`).
-     2. Rimuove la liquidità dalla vecchia posizione (`decreaseLiquidity`).
-     3. Ribilancia i token al rapporto 50/50 richiesto per il nuovo centro prezzo.
-     4. Conia la nuova posizione NFT (`mint`) centrata sul nuovo prezzo di mercato.
-
-3. **Monitoraggio Analitico dell'Impermanent Loss (IL)**:
-   - Confronta costantemente il controvalore corrente della posizione LP con la strategia di riferimento **HODL** ($V_{lp}$ vs $V_{hodl}$).
-   - Calcola il PnL netto comprensivo di tutte le commissioni di swap maturate.
-
-4. **Ragionamento AI con Fallback Deterministico**:
-   - Analizza la struttura di mercato tramite **OpenRouter LLM** (regimi di trending vs oscillazione in range).
-   - Fallback immediato a regole matematiche certe in caso di indisponibilità della rete o delle API LLM.
-
-5. **Simulatore Paper Trading Fedele**:
-   - Modella l'accumulo orario delle fee di swap basato sul fee tier del pool e sull'indice di concentrazione.
-   - Simula gas, slippage e swap di riallineamento senza esporre capitale reale.
-
-6. **Dashboard Web & Telegram Bot**:
-   - Dashboard HTTP standalone nativa:
-     - Barra interattiva di posizionamento all'interno del range (con indicatore visivo del prezzo).
-     - Badge di stato in tempo reale (IN-RANGE / OUT-OF-RANGE).
-     - Metriche di Impermanent Loss e PnL netto.
-     - Storico completo delle operazioni di mint, recenter e collect.
-     - Pulsanti per avviare cicli o eseguire re-center manuali.
-   - Notifiche proattive e comandi interattivi su Telegram (`/status`, `/position`, `/recenter`, `/collect`, `/help`).
+It is part of the [Intelligent Trading](https://github.com/scobru/intelligent-trading)
+suite of agents for Base.
 
 ---
 
-## Architettura del Sistema
+## Main features
+
+1. **Concentrated liquidity on Uniswap V3**:
+   - Provides liquidity in a narrow, optimized range (e.g. $\pm 4\%$ around the
+     current price for WETH/USDC on the 0.05% pool).
+   - Capital efficiency multiplier (concentration factor up to $20\times - 30\times$)
+     compared to traditional v2 liquidity.
+   - Exact tick math ($1.0001^{tick}$), conversions to/from `sqrtPriceX96` and
+     liquidity $L$ estimation.
+
+2. **Dynamic re-centering**:
+   - Watches whether the price leaves the range or enters the edge buffer.
+   - Anti-whipsaw protection: minimum holding time
+     (`MIN_HOLD_HOURS_BEFORE_RECENTER`) to avoid constant repositioning on
+     short-lived volatile breakouts.
+   - Re-centering procedure:
+     1. Collects the accrued fees (`collect`).
+     2. Removes liquidity from the old position (`decreaseLiquidity`).
+     3. Rebalances the tokens to the 50/50 ratio required by the new center price.
+     4. Mints the new NFT position (`mint`) centered on the new market price.
+
+3. **Impermanent loss analytics**:
+   - Constantly compares the current value of the LP position with the **HODL**
+     benchmark ($V_{lp}$ vs $V_{hodl}$).
+   - Computes net P&L including all accrued swap fees.
+
+4. **AI reasoning with a deterministic fallback**:
+   - Analyzes market structure through an **OpenRouter LLM** (trending vs
+     ranging regimes).
+   - Falls back immediately to fixed mathematical rules if the network or the
+     LLM API is unavailable.
+
+5. **Faithful paper trading simulator**:
+   - Models hourly swap fee accrual from the pool's fee tier and the
+     concentration factor.
+   - Simulates gas, slippage and realignment swaps without risking real capital.
+
+6. **Web dashboard & Telegram bot**:
+   - Standalone native HTTP dashboard:
+     - interactive bar showing where the price sits inside the range;
+     - real-time status badge (IN-RANGE / OUT-OF-RANGE);
+     - impermanent loss and net P&L metrics;
+     - full history of mint, recenter and collect operations;
+     - buttons to start cycles or re-center manually (protected by
+       `DASHBOARD_RUN_TOKEN`).
+   - Proactive notifications and interactive Telegram commands (`/status`,
+     `/position`, `/recenter`, `/collect`, `/help`).
+
+---
+
+## Architecture
 
 ```
                             ┌────────────────────────┐
                             │    Uniswap V3 Pool     │
                             │   (slot0: sqrtP, tick) │
                             └───────────┬────────────┘
-                                        │ Prezzo & Tick Correnti
+                                        │ Current price & tick
                                         ▼
 ┌────────────────────────┐   ┌────────────────────────┐   ┌────────────────────────┐
 │    Position Tracker    │──>│       LP Manager       │<──│     OpenRouter LLM     │
-│  (IL vs HODL, Range)   │   │  (Pianificazione LP)   │   │ (Regime & Range Width) │
+│  (IL vs HODL, Range)   │   │     (LP planning)      │   │ (Regime & Range Width) │
 └────────────────────────┘   └───────────┬────────────┘   └────────────────────────┘
                                          │
                  ┌───────────────────────┴───────────────────────┐
                  ▼                                               ▼
      ┌───────────────────────┐                       ┌───────────────────────┐
      │      Paper Book       │                       │  NonfungiblePosMgr    │
-     │  (Simulazione Range)  │                       │   (Mint/Collect Live) │
+     │  (Range simulation)   │                       │  (Live mint/collect)  │
      └───────────────────────┘                       └───────────────────────┘
 ```
 
 ---
 
-## Installazione e Configurazione
+## Installation and configuration
 
-### 1. Configurazione Ambiente
+### 1. Environment
 ```bash
 cp .env.example .env
 ```
 
-Modifica `.env`:
+Edit `.env`:
 ```ini
 BASE_RPC_URL=https://mainnet.base.org
 WALLET_ADDRESS=0x...
 PRIVATE_KEY=...
-DRY_RUN=false
-PAPER_TRADING=false
+# start safe: set both to false only when you are ready to go live
+DRY_RUN=true
+PAPER_TRADING=true
 
-# Coppia del pool LP
+# LP pool pair
 POOL_TOKEN0=WETH
 POOL_TOKEN1=USDC
 POOL_FEE=500  # 0.05%
 
-# Ampiezza del range (+/- 4.0%)
+# Range width (+/- 4.0%)
 RANGE_WIDTH_PCT=8.0
 MIN_HOLD_HOURS_BEFORE_RECENTER=2.0
 ```
 
-### 2. Installazione Dipendenze
+### 2. Dependencies
 ```bash
 pip install -r requirements.txt
 ```
 
-### 3. Avvio
+### 3. Run
 ```bash
 python main.py
 ```
 
-La dashboard web sarà disponibile su `http://localhost:8080`.
+The web dashboard listens on `http://localhost:3000` (`DASHBOARD_PORT`, or
+the standard `PORT` variable passed by Docker / CapRover).
 
 ---
 
-## Esecuzione con Docker e CapRover
+## Docker and CapRover
 
 ```bash
 docker build -t intelligent-trading-agent-lp .
-docker run -d --name lp-agent -p 8080:8080 --env-file .env intelligent-trading-agent-lp
+docker run -d --name lp-agent -p 3000:3000 --env-file .env intelligent-trading-agent-lp
 ```
 
-Deployment su CapRover tramite file `captain-definition`.
+CapRover deployment through the `captain-definition` file.
 
 ---
 
-## Test della Suite
+## Tests
 
 ```bash
 python -m unittest discover tests
@@ -129,23 +148,30 @@ python -m unittest discover tests
 
 ---
 
-## ⚠️ Avvertenza
+## ⚠️ Disclaimer
 
-Questo software è sperimentale ed è fornito "così com'è", senza garanzie di alcun tipo
-(vedi la licenza MIT). Non è consulenza finanziaria né un invito a investire.
+This software is experimental and provided "as is", without warranty of any
+kind (see the MIT license). It is not financial advice nor an invitation to
+invest.
 
-- **Puoi perdere denaro.** Bug, decisioni sbagliate del modello, slippage, exploit dei protocolli,
-  oracoli manipolati e liquidazioni possono far perdere in parte o del tutto il capitale.
-- **Le decisioni le prende un LLM.** Può sbagliare o comportarsi in modo imprevedibile: i limiti
-  dell'esecutore riducono il danno, non lo azzerano. I rendimenti passati, anche in paper, non
-  garantiscono quelli futuri.
-- **Parti in paper o dry-run.** In live usa un wallet dedicato al bot, con importi che puoi
-  permetterti di perdere, e non riutilizzare quella chiave privata altrove.
-- **Proteggi le chiavi.** La chiave privata va solo nelle variabili d'ambiente del deploy: non
-  committarla mai. Senza `DASHBOARD_RUN_TOKEN` i comandi della dashboard restano disattivati:
-  impostalo con un valore lungo e casuale prima di esporla su Internet.
-- **Leggi e tasse.** Sei responsabile del rispetto delle norme e degli obblighi fiscali del tuo paese.
-- **Impermanent loss.** Fornire liquidità concentrata espone a perdite rispetto al semplice possesso dei token quando il prezzo esce dal range; le commissioni non sempre le compensano.
+- **You can lose money.** Bugs, wrong model decisions, slippage, protocol
+  exploits, manipulated oracles and liquidations can cause the loss of some or
+  all of your capital.
+- **Decisions are made by an LLM.** It can be wrong or behave unpredictably:
+  the executor's limits reduce the damage, they do not eliminate it. Past
+  results, paper ones included, do not guarantee future ones.
+- **Start with paper or dry-run.** When live, use a wallet dedicated to the
+  bot, with amounts you can afford to lose, and never reuse that private key
+  elsewhere.
+- **Protect your keys.** The private key belongs only in the deployment's
+  environment variables: never commit it. Without `DASHBOARD_RUN_TOKEN` the
+  dashboard commands stay disabled: set it to a long random value before
+  exposing the dashboard to the Internet.
+- **Laws and taxes.** You are responsible for complying with the rules and tax
+  obligations of your country.
+- **Impermanent loss.** Providing concentrated liquidity exposes you to losses
+  compared to simply holding the tokens when the price leaves the range; fees
+  do not always make up for them.
 
-## Licenza
+## License
 MIT
