@@ -1,5 +1,7 @@
 # Intelligent Trading Agent - Concentrated Liquidity LP (Base L2)
 
+> ⚠️ **Software sperimentale, non consulenza finanziaria.** Il bot opera con denaro reale su Base e può perdere in parte o del tutto il capitale che gli affidi. Parti in paper trading o dry-run; in live usa un wallet dedicato e solo importi che puoi permetterti di perdere. Dettagli nella sezione **Avvertenza** in fondo.
+
 Agente autonomo per la fornitura attiva di **Liquidità Concentrata** su **Uniswap V3** (e compatibile Aerodrome Slipstream) su rete **Base (Chain ID 8453)** con monitoraggio continuo dell'**Impermanent Loss (IL)**, raccolta automatica delle commissioni e **riposizionamento (re-centering) dinamico** del range.
 
 Parte della suite di trading agent modulari per Base (`intelligent-trading-agent`, `intelligent-trading-agent-neutral`, `intelligent-trading-agent-degen`, `intelligent-trading-agent-yield`, `intelligent-trading-agent-dca`, `intelligent-trading-agent-lp`).
@@ -126,6 +128,24 @@ python -m unittest discover tests
 ```
 
 ---
+
+## ⚠️ Avvertenza
+
+Questo software è sperimentale ed è fornito "così com'è", senza garanzie di alcun tipo
+(vedi la licenza MIT). Non è consulenza finanziaria né un invito a investire.
+
+- **Puoi perdere denaro.** Bug, decisioni sbagliate del modello, slippage, exploit dei protocolli,
+  oracoli manipolati e liquidazioni possono far perdere in parte o del tutto il capitale.
+- **Le decisioni le prende un LLM.** Può sbagliare o comportarsi in modo imprevedibile: i limiti
+  dell'esecutore riducono il danno, non lo azzerano. I rendimenti passati, anche in paper, non
+  garantiscono quelli futuri.
+- **Parti in paper o dry-run.** In live usa un wallet dedicato al bot, con importi che puoi
+  permetterti di perdere, e non riutilizzare quella chiave privata altrove.
+- **Proteggi le chiavi.** La chiave privata va solo nelle variabili d'ambiente del deploy: non
+  committarla mai. Senza `DASHBOARD_RUN_TOKEN` i comandi della dashboard restano disattivati:
+  impostalo con un valore lungo e casuale prima di esporla su Internet.
+- **Leggi e tasse.** Sei responsabile del rispetto delle norme e degli obblighi fiscali del tuo paese.
+- **Impermanent loss.** Fornire liquidità concentrata espone a perdite rispetto al semplice possesso dei token quando il prezzo esce dal range; le commissioni non sempre le compensano.
 
 ## Licenza
 MIT
