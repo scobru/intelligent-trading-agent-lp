@@ -891,9 +891,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 pass
             try:
                 from base_client import BaseClient
-                from lp_manager import LPManager
-                client = BaseClient()
-                manager = LPManager(client)
+                client = DashboardHandler.client or BaseClient()
+                manager = DashboardHandler.manager or LpManager(client)
                 res = manager.release_funds(target_usdc=target_amount)
                 self._send_json(200, res)
             except Exception as exc:
