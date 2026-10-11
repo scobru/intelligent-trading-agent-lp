@@ -421,6 +421,107 @@ class TestPoolScannerAndMultiPair(unittest.TestCase):
             shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+class TestResilienceAndFailover(unittest.TestCase):
+    def test_fallback_http_provider_rotation_on_429(self):
+        from base_client import FallbackHTTPProvider
+        import requests
+
+        endpoints = ["https://primary.rpc.io", "https://fallback.rpc.io"]
+        provider = FallbackHTTPProvider(endpoints)
+        self.assertEqual(provider.endpoint_uri, "https://primary.rpc.io")
+
+        # Simula 429 sul primo endpoint e successo sul secondo
+        err_response = MagicMock()
+        err_response.status_code = 429
+        http_429 = requests.exceptions.HTTPError("429 Client Error", response=err_response)
+
+        call_count = 0
+        def fake_super_make_request(method, request_data):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise http_429
+            return b'{"jsonrpc":"2.0","result":"0x1","id":1}'
+
+        with patch("web3.HTTPProvider._make_request", side_effect=fake_super_make_request):
+            res = provider._make_request("eth_chainId", b"{}")
+            self.assertEqual(res, b'{"jsonrpc":"2.0","result":"0x1","id":1}')
+            self.assertEqual(provider.endpoint_uri, "https://fallback.rpc.io")
+            self.assertGreater(provider._cooldowns.get("https://primary.rpc.io", 0), time.time())
+
+    def test_lp_manager_status_fallback(self):
+        client_mock = MagicMock()
+        client_mock.address = "0x1234567890123456789012345678901234567890"
+        mgr = LpManager(client_mock)
+
+        # 1. Con cache preesistente e crash RPC, restituisce la cache senza sollevare eccezioni
+        mgr._status_cache = {"mode": "live", "current_price": 2600.0, "balances": {"USDC": 100.0}}
+        mgr._status_cache_time = time.time() - 100.0
+
+        with patch.object(mgr, "_compute_status", side_effect=RuntimeError("RPC down 429")):
+            st = mgr.get_status(max_age=0.0)
+            self.assertEqual(st["current_price"], 2600.0)
+
+        # 2. Senza cache e con crash RPC, restituisce fallback sicuro con indicazione di errore
+        mgr._status_cache = None
+        with patch.object(mgr, "_compute_status", side_effect=RuntimeError("RPC down 429")):
+            st = mgr.get_status(max_age=0.0)
+            self.assertIn("error", st)
+            self.assertFalse(st["position"]["has_position"])
+
+    def test_dashboard_broken_pipe_suppression(self):
+        from dashboard import DashboardHandler, ReuseAddrHTTPServer
+        import io
+
+        handler = DashboardHandler.__new__(DashboardHandler)
+        handler.wfile = MagicMock()
+        handler.wfile.write.side_effect = BrokenPipeError(32, "Broken pipe")
+        handler.send_response = MagicMock()
+        handler.send_header = MagicMock()
+        handler.end_headers = MagicMock()
+
+        # Non deve lanciare eccezioni
+        handler._send_json(200, {"status": "ok"})
+
+        # Verifica handle_error su server
+        server = ReuseAddrHTTPServer.__new__(ReuseAddrHTTPServer)
+        with patch("sys.exc_info", return_value=(BrokenPipeError, BrokenPipeError(32, "Broken pipe"), None)):
+            with patch("socketserver.BaseServer.handle_error") as mock_super_handle:
+                server.handle_error(MagicMock(), ("127.0.0.1", 12345))
+                mock_super_handle.assert_not_called()
+
+    def test_db_snapshot_and_fetch_latest_status(self):
+        import tempfile
+        import shutil
+        import db_utils
+        from unittest.mock import patch
+
+        temp_dir = tempfile.mkdtemp()
+        db_path = os.path.join(temp_dir, "test_lp.db")
+        try:
+            with patch("config.SQLITE_DB_PATH", db_path):
+                db_utils.init_db()
+                self.assertIsNone(db_utils.fetch_latest_status())
+
+                sample_status = {
+                    "mode": "live",
+                    "current_price": 2450.5,
+                    "balances": {"USDC": 500.0, "WETH": 0.2},
+                    "position": {"has_position": True, "is_strictly_in_range": True},
+                }
+                db_utils.log_snapshot(sample_status)
+
+                latest = db_utils.fetch_latest_status()
+                self.assertIsNotNone(latest)
+                self.assertEqual(latest["current_price"], 2450.5)
+                self.assertEqual(latest["balances"]["USDC"], 500.0)
+
+                db_data = db_utils.fetch_dashboard_data()
+                self.assertEqual(db_data["status"]["current_price"], 2450.5)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+
 if __name__ == "__main__":
     unittest.main()
 

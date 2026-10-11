@@ -66,7 +66,7 @@ class BaseChainError(RuntimeError):
 
 
 def _retrying_session() -> requests.Session:
-    """Sessione HTTP che ritenta su 429/5xx con backoff (le POST JSON-RPC sono idempotenti in lettura)."""
+    """Sessione HTTP che ritenta su 429/5xx con backoff rapido (fail-fast verso fallback RPC)."""
     retry = Retry(
         total=config.RPC_MAX_RETRIES,
         backoff_factor=config.RPC_BACKOFF_SECONDS,
@@ -82,15 +82,104 @@ def _retrying_session() -> requests.Session:
     return session
 
 
+class FallbackHTTPProvider(Web3.HTTPProvider):
+    """
+    HTTPProvider con rotazione automatica e failover su endpoint RPC alternativi.
+    Se l'endpoint attivo restituisce 429 (Too Many Requests), errori 5xx o timeout/connessione,
+    viene posto temporaneamente in cooldown e la chiamata passa immediatamente al fallback.
+    """
+    def __init__(self, endpoints: List[str], **kwargs):
+        self.endpoints = [ep.strip() for ep in endpoints if ep and ep.strip()]
+        if not self.endpoints:
+            self.endpoints = [config.BASE_RPC_URL]
+        self.current_idx = 0
+        self._cooldowns: Dict[str, float] = {}
+        super().__init__(self.endpoints[0], **kwargs)
+
+    def _get_active_endpoint(self) -> str:
+        now = time.time()
+        n = len(self.endpoints)
+        for i in range(n):
+            idx = (self.current_idx + i) % n
+            ep = self.endpoints[idx]
+            if self._cooldowns.get(ep, 0.0) <= now:
+                self.current_idx = idx
+                return ep
+        # Se tutti gli endpoint sono in cooldown, usa quello con cooldown più vicino alla scadenza
+        earliest_ep = min(self.endpoints, key=lambda e: self._cooldowns.get(e, 0.0))
+        self.current_idx = self.endpoints.index(earliest_ep)
+        return earliest_ep
+
+    def _mark_cooldown(self, endpoint: str, duration: float = 60.0):
+        self._cooldowns[endpoint] = time.time() + duration
+
+    def _make_request(self, method: Any, request_data: bytes) -> bytes:
+        total_endpoints = len(self.endpoints)
+        last_exc: Optional[Exception] = None
+
+        for attempt in range(total_endpoints):
+            active_url = self._get_active_endpoint()
+            self.endpoint_uri = active_url
+            try:
+                return super()._make_request(method, request_data)
+            except Exception as exc:
+                last_exc = exc
+                is_rate_limit = False
+                if isinstance(exc, requests.exceptions.HTTPError):
+                    status_code = getattr(getattr(exc, "response", None), "status_code", None)
+                    if status_code == 429:
+                        is_rate_limit = True
+                elif "429" in str(exc) or "Too Many Requests" in str(exc):
+                    is_rate_limit = True
+
+                cooldown_dur = config.RPC_COOLDOWN_SECONDS * (2 if is_rate_limit else 1)
+                self._mark_cooldown(active_url, cooldown_dur)
+
+                if total_endpoints > 1:
+                    next_idx = (self.current_idx + 1) % total_endpoints
+                    next_url = self.endpoints[next_idx]
+                    logger.warning(
+                        "RPC endpoint %s non disponibile (%s). Failover immediato su fallback %s (cooldown %.0fs)",
+                        active_url,
+                        "429 Too Many Requests" if is_rate_limit else str(exc),
+                        next_url,
+                        cooldown_dur,
+                    )
+                    self.current_idx = next_idx
+                else:
+                    logger.warning("RPC endpoint %s fallito: %s (nessun fallback configurato)", active_url, exc)
+                    break
+
+        if last_exc:
+            raise last_exc
+        return b""
+
+
 class BaseClient:
-    def __init__(self, rpc_url: str = None, private_key: str = None, address: str = None):
-        self.rpc_url = rpc_url or config.BASE_RPC_URL
-        self.w3 = Web3(Web3.HTTPProvider(
-            self.rpc_url, request_kwargs={"timeout": config.HTTP_TIMEOUT}, session=_retrying_session()
-        ))
+    def __init__(
+        self,
+        rpc_url: str = None,
+        private_key: str = None,
+        address: str = None,
+        fallback_rpc_urls: Optional[List[str]] = None,
+    ):
+        primary_url = rpc_url or config.BASE_RPC_URL
+        self.endpoints: List[str] = [primary_url]
+        fallbacks = fallback_rpc_urls if fallback_rpc_urls is not None else config.BASE_FALLBACK_RPCS
+        for fb in fallbacks:
+            if fb and fb not in self.endpoints:
+                self.endpoints.append(fb)
+
+        self.provider = FallbackHTTPProvider(
+            self.endpoints,
+            request_kwargs={"timeout": config.HTTP_TIMEOUT},
+            session=_retrying_session(),
+        )
+        self.w3 = Web3(self.provider)
         # Base e' una L2 OP-stack: gli header hanno extraData fuori standard
         self.w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
 
+        self.rpc_url = primary_url
         self._private_key = private_key if private_key is not None else config.PRIVATE_KEY
         self.account = Account.from_key(self._private_key) if self._private_key else None
 
@@ -111,6 +200,10 @@ class BaseClient:
         self._decimals_cache: Dict[str, int] = {}
         self._symbol_cache: Dict[str, str] = {}
 
+    @property
+    def active_rpc_url(self) -> str:
+        return self.provider.endpoint_uri
+
     # ------------------------------------------------------------ stato rete
     def is_connected(self) -> bool:
         try:
@@ -119,7 +212,7 @@ class BaseClient:
             return False
 
     def chain_id(self) -> int:
-        return self.w3.eth.chain_id
+        return config.CHAIN_ID
 
     def gas_price_gwei(self) -> float:
         return float(self.w3.from_wei(self.w3.eth.gas_price, "gwei"))
@@ -137,16 +230,24 @@ class BaseClient:
     def decimals(self, token_address: str) -> int:
         key = token_address.lower()
         if key not in self._decimals_cache:
-            self._decimals_cache[key] = int(self.erc20(token_address).functions.decimals().call())
+            meta = config.get_token_meta(token_address)
+            if meta and "decimals" in meta:
+                self._decimals_cache[key] = int(meta["decimals"])
+            else:
+                self._decimals_cache[key] = int(self.erc20(token_address).functions.decimals().call())
         return self._decimals_cache[key]
 
     def symbol(self, token_address: str) -> str:
         key = token_address.lower()
         if key not in self._symbol_cache:
-            try:
-                self._symbol_cache[key] = str(self.erc20(token_address).functions.symbol().call())
-            except Exception:
-                self._symbol_cache[key] = "???"
+            meta = config.get_token_meta(token_address)
+            if meta and "symbol" in meta:
+                self._symbol_cache[key] = str(meta["symbol"])
+            else:
+                try:
+                    self._symbol_cache[key] = str(self.erc20(token_address).functions.symbol().call())
+                except Exception:
+                    self._symbol_cache[key] = "???"
         return self._symbol_cache[key]
 
     def balance_of(self, token_address: str, address: str = None) -> int:

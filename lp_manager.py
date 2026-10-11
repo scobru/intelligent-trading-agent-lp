@@ -50,13 +50,19 @@ class LpManager:
     # ------------------------------------------------------------ pool & prezzo
     def get_pool_address(self) -> str:
         if self._pool_address is None:
+            # Shortcut per coppie standard conosciute su Base per evitare chiamate RPC alla Factory
+            pair_symbols = {self.token0_symbol, self.token1_symbol}
+            if pair_symbols == {"WETH", "USDC"} and self.fee_tier == 500:
+                self._pool_address = "0xd4405F0704621DBe9d4dEA60E128E0C3b26bddbD"
+                return self._pool_address
+
             token0 = config.get_token_address(self.token0_symbol)
             token1 = config.get_token_address(self.token1_symbol)
             try:
                 self._pool_address = self.v3_lp.get_pool_address(token0, token1, self.fee_tier)
             except Exception as exc:
                 logger.warning("Impossibile recuperare pool address da Factory: %s", exc)
-                if self.token0_symbol == "WETH" and self.token1_symbol == "USDC" and self.fee_tier == 500:
+                if pair_symbols == {"WETH", "USDC"} and self.fee_tier == 500:
                     self._pool_address = "0xd4405F0704621DBe9d4dEA60E128E0C3b26bddbD"
         return self._pool_address or "0x0000000000000000000000000000000000000000"
 
@@ -153,23 +159,56 @@ class LpManager:
     def get_status(self, max_age: float = 0.0) -> Dict[str, Any]:
         """
         Stato complessivo. Con max_age > 0 riusa il risultato recente (dashboard,
-        Telegram) e, se l'RPC fallisce, serve l'ultimo stato noto invece di errore.
+        Telegram) e, se l'RPC fallisce, serve l'ultimo stato noto in cache invece di errore.
+        In assenza di cache, restituisce uno stato di fallback sicuro evitando crash.
         """
         with self._status_lock:
             now = time.time()
             cached = self._status_cache
-            if cached is not None and max_age > 0 and now - self._status_cache_time < max_age:
+            if cached is not None and max_age > 0 and (now - self._status_cache_time < max_age):
                 return cached
             try:
                 status = self._compute_status()
+                self._status_cache = status
+                self._status_cache_time = time.time()
+                return status
             except Exception as exc:
-                if cached is not None and max_age > 0:
-                    logger.warning("Stato non aggiornabile (%s): uso l'ultimo stato in cache", exc)
+                if cached is not None:
+                    logger.warning(
+                        "Stato non aggiornabile (%s): uso l'ultimo stato in cache (eta %.1fs)",
+                        exc, now - self._status_cache_time
+                    )
                     return cached
-                raise
-            self._status_cache = status
-            self._status_cache_time = time.time()
-            return status
+                logger.error("Errore calcolo stato e nessuna cache disponibile: %s", exc)
+                return self._fallback_status(str(exc))
+
+    def _fallback_status(self, error_msg: str = "") -> Dict[str, Any]:
+        """Restituisce uno stato minimale sicuro in caso di errore totale RPC e assenza di cache."""
+        price, tick = self._cached_price or 2500.0, self.last_tick or 0
+        return {
+            "mode": "paper" if self.paper else ("dry_run" if config.DRY_RUN else "live"),
+            "wallet": self.client.address if self.client else "",
+            "total_equity_usd": 0.0,
+            "total_value_usd": 0.0,
+            "pool": {
+                "address": self.get_pool_address(),
+                "pair": f"{self.token0_symbol}/{self.token1_symbol}",
+                "fee_tier": self.fee_tier,
+                "token0": self.token0_symbol,
+                "token1": self.token1_symbol,
+            },
+            "current_price": price,
+            "current_tick": tick,
+            "position": {"has_position": False, "is_strictly_in_range": False},
+            "balances": {self.token1_symbol: 0.0, self.token0_symbol: 0.0, "ETH": 0.0},
+            "needs_mint": False,
+            "needs_recenter": False,
+            "needs_collect": False,
+            "range_width_pct": config.RANGE_WIDTH_PCT,
+            "total_recenters": self.tracker.state.get("total_recenters", 0),
+            "total_fees_collected_usd": self.tracker.state.get("total_fees_collected_usd", 0.0),
+            "error": error_msg,
+        }
 
     def _compute_status(self) -> Dict[str, Any]:
         price, tick = self.get_current_price_and_tick()
@@ -211,10 +250,30 @@ class LpManager:
             pos_eval = self.tracker.evaluate(price, tick, prices)
             t0_addr = config.get_token_address(self.token0_symbol)
             t1_addr = config.get_token_address(self.token1_symbol)
+
+            cached_b = (self._status_cache or {}).get("balances", {})
+            try:
+                b1 = self.client.balance_of_float(t1_addr) if self.client.address else 0.0
+            except Exception as exc:
+                logger.warning("Impossibile leggere saldo %s on-chain (%s): uso cache", self.token1_symbol, exc)
+                b1 = float(cached_b.get(self.token1_symbol, 0.0))
+
+            try:
+                b0 = self.client.balance_of_float(t0_addr) if self.client.address else 0.0
+            except Exception as exc:
+                logger.warning("Impossibile leggere saldo %s on-chain (%s): uso cache", self.token0_symbol, exc)
+                b0 = float(cached_b.get(self.token0_symbol, 0.0))
+
+            try:
+                b_eth = self.client.eth_balance() if self.client.address else 0.0
+            except Exception as exc:
+                logger.warning("Impossibile leggere saldo ETH on-chain (%s): uso cache", exc)
+                b_eth = float(cached_b.get("ETH", 0.0))
+
             balances = {
-                self.token1_symbol: self.client.balance_of_float(t1_addr) if self.client.address else 0.0,
-                self.token0_symbol: self.client.balance_of_float(t0_addr) if self.client.address else 0.0,
-                "ETH": self.client.eth_balance() if self.client.address else 0.0,
+                self.token1_symbol: b1,
+                self.token0_symbol: b0,
+                "ETH": b_eth,
             }
             paper_summary = None
 

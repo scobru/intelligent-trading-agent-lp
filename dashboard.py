@@ -715,21 +715,27 @@ class DashboardHandler(BaseHTTPRequestHandler):
             rel, ctype = STATIC_ROUTES[path]
             fpath = os.path.join(STATIC_DIR, rel)
             if os.path.isfile(fpath):
-                self.send_response(200)
-                self.send_header("Content-Type", ctype)
-                self.send_header("Cache-Control", "public, max-age=86400")
-                self.end_headers()
-                with open(fpath, "rb") as fh:
-                    self.wfile.write(fh.read())
+                try:
+                    self.send_response(200)
+                    self.send_header("Content-Type", ctype)
+                    self.send_header("Cache-Control", "public, max-age=86400")
+                    self.end_headers()
+                    with open(fpath, "rb") as fh:
+                        self.wfile.write(fh.read())
+                except (BrokenPipeError, ConnectionResetError):
+                    logger.debug("Client disconnesso durante l'invio del file statico %s", rel)
                 return
             self.send_error(404)
             return
 
         if path in ("/", "/index.html"):
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(HTML.encode("utf-8"))
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(HTML.encode("utf-8"))
+            except (BrokenPipeError, ConnectionResetError):
+                logger.debug("Client disconnesso durante l'invio della pagina principale")
             return
 
         if path == "/health":
@@ -740,6 +746,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             try:
                 pools_data = pool_scanner.scanner.scan()
                 self._send_json(200, pools_data)
+            except (BrokenPipeError, ConnectionResetError):
+                logger.debug("Client disconnesso durante /api/pools")
             except Exception as exc:
                 logger.error("Errore /api/pools: %s", exc)
                 self._send_json(500, {"error": str(exc)})
@@ -747,8 +755,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         if path == "/api/data":
             try:
-                st = dict(self.manager.get_status(max_age=config.STATUS_CACHE_TTL_SECONDS)) if self.manager else {}
                 db_data = db_utils.fetch_dashboard_data()
+                st = db_data.get("status")
+                if not st and self.manager:
+                    st = dict(self.manager.get_status(max_age=config.STATUS_CACHE_TTL_SECONDS))
+                elif not st:
+                    st = {}
                 meta = build_meta({"status": st, "snapshot_at": db_data.get("snapshot_at")})
                 pools_data = pool_scanner.scanner.scan()
                 payload = {
@@ -763,6 +775,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 payload["is_paused"] = db_utils.is_bot_paused()
                 payload["pause_info"] = db_utils.get_pause_info()
                 self._send_json(200, payload)
+            except (BrokenPipeError, ConnectionResetError):
+                logger.debug("Client disconnesso durante /api/data")
             except Exception as exc:
                 logger.error("Errore /api/data: %s", exc)
                 self._send_json(500, {"error": str(exc)})
@@ -770,10 +784,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         if path == "/api/status":
             try:
-                st = dict(self.manager.get_status(max_age=config.STATUS_CACHE_TTL_SECONDS)) if self.manager else {}
+                st = db_utils.fetch_latest_status()
+                if not st and self.manager:
+                    st = dict(self.manager.get_status(max_age=config.STATUS_CACHE_TTL_SECONDS))
+                elif not st:
+                    st = {}
                 st["is_paused"] = db_utils.is_bot_paused()
                 st["pause_info"] = db_utils.get_pause_info()
                 self._send_json(200, st)
+            except (BrokenPipeError, ConnectionResetError):
+                logger.debug("Client disconnesso durante /api/status")
             except Exception as exc:
                 self._send_json(500, {"error": str(exc)})
             return
@@ -782,6 +802,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             try:
                 ops = db_utils.get_recent_operations(limit=30)
                 self._send_json(200, ops)
+            except (BrokenPipeError, ConnectionResetError):
+                logger.debug("Client disconnesso durante /api/operations")
             except Exception as exc:
                 self._send_json(500, {"error": str(exc)})
             return
@@ -790,6 +812,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             try:
                 snaps = db_utils.get_recent_snapshots(limit=50)
                 self._send_json(200, snaps)
+            except (BrokenPipeError, ConnectionResetError):
+                logger.debug("Client disconnesso durante /api/snapshots")
             except Exception as exc:
                 self._send_json(500, {"error": str(exc)})
             return
@@ -902,16 +926,26 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_error(404)
 
     def _send_json(self, status: int, data: Any):
-        body = json.dumps(data, default=str).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            body = json.dumps(data, default=str).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            logger.debug("Client disconnesso prima dell'invio della risposta JSON")
 
 
 class ReuseAddrHTTPServer(ThreadingHTTPServer):
     allow_reuse_address = True
+
+    def handle_error(self, request, client_address):
+        exc_type, exc_val, _ = sys.exc_info()
+        if exc_type in (BrokenPipeError, ConnectionResetError):
+            logger.debug("Connessione chiusa prematuramente dal client %s (%s)", client_address, exc_val)
+            return
+        super().handle_error(request, client_address)
 
 
 def run_dashboard(client: Optional[BaseClient] = None, manager: Optional[LpManager] = None):

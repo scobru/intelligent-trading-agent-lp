@@ -230,3 +230,6 @@ lp_pool_config.json
 # Pix Agent
 .pi/
 .pi-lens/
+
+# Knowledge graph
+graphify-out/

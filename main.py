@@ -53,6 +53,13 @@ def run_cycle(manager: LpManager, agent: LpAgent, notifier: TelegramNotifier) ->
 
     # 2. Stato corrente
     status = manager.get_status()
+    if not status or status.get("error"):
+        logger.warning(
+            "Stato LP non disponibile (%s). Ciclo interrotto in sicurezza.",
+            (status or {}).get("error", "dati mancanti")
+        )
+        return
+
     pos = status.get("position", {})
     price = status.get("current_price", 0.0)
 
@@ -102,8 +109,21 @@ def main():
     notifier = TelegramNotifier(manager)
 
     if args.once:
-        run_cycle(manager, agent, notifier)
+        try:
+            run_cycle(manager, agent, notifier)
+        except Exception as exc:
+            logger.error("Errore durante esecuzione ciclo LP (--once): %s", exc, exc_info=True)
+            sys.exit(1)
         return
+
+    # Popola lo stato iniziale in SQLite se il DB e' vuoto, cosi' la dashboard ha dati istantanei
+    if not db_utils.fetch_latest_status():
+        try:
+            initial_st = manager.get_status()
+            if initial_st and not initial_st.get("error"):
+                db_utils.log_snapshot(initial_st)
+        except Exception as exc:
+            logger.debug("Impossibile salvare stato iniziale a DB: %s", exc)
 
     # Avvio Dashboard Web in background
     if not args.no_dashboard:

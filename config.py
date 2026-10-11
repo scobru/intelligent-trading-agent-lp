@@ -39,6 +39,19 @@ def _b(name: str, default: bool) -> bool:
 CHAIN_ID = 8453
 CHAIN_NAME = "Base"
 BASE_RPC_URL = os.getenv("BASE_RPC_URL", "https://mainnet.base.org")
+
+DEFAULT_FALLBACK_RPCS = [
+    "https://mainnet.base.org",
+    "https://base.llamarpc.com",
+    "https://1rpc.io/base",
+    "https://base-rpc.publicnode.com",
+]
+_custom_fallbacks = os.getenv("BASE_FALLBACK_RPCS", "")
+if _custom_fallbacks:
+    BASE_FALLBACK_RPCS = [u.strip() for u in _custom_fallbacks.split(",") if u.strip()]
+else:
+    BASE_FALLBACK_RPCS = DEFAULT_FALLBACK_RPCS
+
 WALLET_ADDRESS = os.getenv("WALLET_ADDRESS", "")
 PRIVATE_KEY = os.getenv("PRIVATE_KEY", "")
 
@@ -142,8 +155,9 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 # ---------------------------------------------------------------- HTTP / transazioni
 # Retry su 429/5xx dell'RPC (backoff esponenziale, rispetta Retry-After)
-RPC_MAX_RETRIES = int(os.getenv("RPC_MAX_RETRIES", 5))
-RPC_BACKOFF_SECONDS = float(os.getenv("RPC_BACKOFF_SECONDS", 1.0))
+RPC_MAX_RETRIES = int(os.getenv("RPC_MAX_RETRIES", 2))
+RPC_BACKOFF_SECONDS = float(os.getenv("RPC_BACKOFF_SECONDS", 0.5))
+RPC_COOLDOWN_SECONDS = float(os.getenv("RPC_COOLDOWN_SECONDS", 60.0))
 # Cache dello stato per dashboard/Telegram, cosi' non colpiscono l'RPC a ogni richiesta
 STATUS_CACHE_TTL_SECONDS = float(os.getenv("STATUS_CACHE_TTL_SECONDS", 30))
 HTTP_TIMEOUT = int(os.getenv("HTTP_TIMEOUT", 30))  # timeout connessione RPC in secondi

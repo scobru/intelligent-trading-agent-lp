@@ -39,7 +39,8 @@ def init_db():
                 is_in_range INTEGER,
                 impermanent_loss_pct REAL,
                 net_pnl_usd REAL,
-                details_json TEXT
+                details_json TEXT,
+                raw_json TEXT
             );
 
             CREATE TABLE IF NOT EXISTS lp_operations (
@@ -62,6 +63,10 @@ def init_db():
                 updated_at TEXT NOT NULL
             );
         """)
+        try:
+            conn.execute("ALTER TABLE lp_snapshots ADD COLUMN raw_json TEXT")
+        except Exception:
+            pass
 
 
 def log_snapshot(status: Dict[str, Any]):
@@ -77,8 +82,8 @@ def log_snapshot(status: Dict[str, Any]):
                 INSERT INTO lp_snapshots (
                     created_at, current_price, current_tick, total_equity_usd,
                     position_value_usd, fees_collected_usd, is_in_range,
-                    impermanent_loss_pct, net_pnl_usd, details_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    impermanent_loss_pct, net_pnl_usd, details_json, raw_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 now,
                 float(status.get("current_price", 0.0)),
@@ -90,9 +95,26 @@ def log_snapshot(status: Dict[str, Any]):
                 float(pos.get("impermanent_loss_pct", 0.0)),
                 float(pos.get("net_pnl_usd", 0.0)),
                 json.dumps(pos, default=str),
+                json.dumps(status, default=str),
             ))
     except Exception as exc:
         logger.warning("Errore salvataggio snapshot LP a DB: %s", exc)
+
+
+def fetch_latest_status() -> Optional[Dict[str, Any]]:
+    """Restituisce l'ultimo stato salvato dal ciclo in SQLite.
+    Se disponibile, evita chiamate RPC dirette da dashboard o Coordinator."""
+    try:
+        init_db()
+        with _connect() as conn:
+            row = conn.execute(
+                "SELECT raw_json FROM lp_snapshots WHERE raw_json IS NOT NULL ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            if row and row["raw_json"]:
+                return json.loads(row["raw_json"])
+    except Exception as exc:
+        logger.debug("Impossibile recuperare ultimo status da DB: %s", exc)
+    return None
 
 
 def log_operation(action: Dict[str, Any], result: Dict[str, Any]):
@@ -151,7 +173,16 @@ def fetch_dashboard_data(limit: int = 50) -> Dict[str, Any]:
             SELECT * FROM lp_operations ORDER BY id DESC LIMIT ?
         """, (limit,)).fetchall()
 
+    latest_status = None
+    if latest:
+        try:
+            if "raw_json" in latest.keys() and latest["raw_json"]:
+                latest_status = json.loads(latest["raw_json"])
+        except Exception:
+            pass
+
     return {
+        "status": latest_status,
         "snapshot_at": latest["created_at"] if latest else None,
         "equity": [dict(r) for r in equity],
         "operations": [dict(r) for r in ops],
