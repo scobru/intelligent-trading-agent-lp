@@ -140,9 +140,9 @@ class FallbackHTTPProvider(Web3.HTTPProvider):
                     next_url = self.endpoints[next_idx]
                     logger.warning(
                         "RPC endpoint %s non disponibile (%s). Failover immediato su fallback %s (cooldown %.0fs)",
-                        active_url,
+                        active_url.split("/v2/")[0],  # hide the API key
                         "429 Too Many Requests" if is_rate_limit else str(exc),
-                        next_url,
+                        next_url.split("/v2/")[0],
                         cooldown_dur,
                     )
                     self.current_idx = next_idx
